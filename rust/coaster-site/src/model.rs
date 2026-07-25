@@ -452,7 +452,14 @@ impl EvalRun {
     /// runs from before it recorded that fall back to "every model ran the
     /// same number of rounds".
     pub fn incomplete_reason(&self) -> Option<String> {
-        let have = |name: &str| self.models.iter().find(|m| m.model == name);
+        // run.json promises raw model ids ("poolside/Laguna-S-2.1") but round
+        // dirs are sanitised ("poolside_Laguna-S-2.1"); compare like for like
+        // or every OpenAI-lane run reads as "no rounds for <model>".
+        let have = |name: &str| {
+            self.models
+                .iter()
+                .find(|m| m.model == name || m.model == sanitise_name(name))
+        };
         let missing: Vec<&str> = self
             .expected_models
             .iter()
@@ -847,6 +854,18 @@ mod tests {
             partial.incomplete_reason().as_deref(),
             Some("no rounds for b")
         );
+    }
+
+    #[test]
+    fn promised_model_ids_match_their_sanitised_round_dirs() {
+        // The driver records "poolside/Laguna-S-2.1" in run.json but writes
+        // rounds under "poolside_Laguna-S-2.1"; the run is still complete.
+        let complete = run(
+            vec![("poolside_Laguna-S-2.1", 1)],
+            &["poolside/Laguna-S-2.1"],
+            Some(1),
+        );
+        assert_eq!(complete.incomplete_reason(), None);
     }
 
     #[test]
