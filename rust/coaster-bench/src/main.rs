@@ -731,6 +731,9 @@ fn main() -> Result<(), String> {
     write_json(
         &run_dir.join("run.json"),
         &json!({
+            // coaster-bench only orchestrates the flagship goal today; the
+            // site refuses to rank runs of different goals together.
+            "goal": "best-coaster",
             "mode": "design",
             "orchestrator": "coaster-bench",
             "harness": run_harness,
@@ -835,7 +838,7 @@ fn main() -> Result<(), String> {
     });
     write_json(
         &run_dir.join("standings.json"),
-        &json!({"standings": standings}),
+        &json!({"goal": "best-coaster", "standings": standings}),
     )?;
 
     println!("\n=== FINAL STANDINGS ===");

@@ -91,6 +91,46 @@ typedef struct Orct2TrackBounds {
   int32_t max_z;
 } Orct2TrackBounds;
 
+/**
+ * Whole-park counters, for the guest-services and max-vomit goals' scoring.
+ * Money fields are the game's fixed-point money64: 10 units = $1.00.
+ */
+typedef struct Orct2ParkStats {
+  /**
+   * Park rating, 0-999 as shown in game.
+   */
+  uint16_t rating;
+  uint32_t guests;
+  int64_t cash;
+  /**
+   * Vomit piles currently on the ground (Litter entities of type
+   * vomit/vomitAlt). Undercounts cumulative vomiting: handymen sweep
+   * piles, and at 500 litter entities the engine recycles them.
+   */
+  uint32_t vomit;
+  /**
+   * Guest vomit EVENTS since process start (the Guest::throwUp hook), the
+   * true integral the max-vomit goal scores on: immune to sweeping, the
+   * litter cap, and unlitterable ground. Diff two snapshots for a period.
+   */
+  uint64_t vomit_events;
+} Orct2ParkStats;
+
+/**
+ * Counters for one stall (stalls never get ratings; profit is the signal).
+ */
+typedef struct Orct2StallDetail {
+  /**
+   * Lifetime profit (income minus running costs), money64.
+   */
+  int64_t profit;
+  uint32_t total_customers;
+  /**
+   * Primary item price, money64.
+   */
+  int64_t price;
+} Orct2StallDetail;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -109,8 +149,8 @@ int32_t orct2_agent_init(void);
 void orct2_agent_tick(uint32_t tick);
 
 /**
- * Reads a JSON track program from `path` and executes it against the live
- * game (create ride, place pieces, flip to testing). Returns an owned outcome
+ * Reads a JSON program from `path` and executes it against the live game
+ * (see `run_program_json` for the accepted shapes). Returns an owned outcome
  * handle; pass it to `orct2_agent_eval_finish`, which frees it. Never null.
  *
  * # Safety
@@ -245,6 +285,25 @@ extern char *orct2_host_track_library_json(void);
 extern void orct2_host_string_free(char *s);
 
 extern uint16_t orct2_host_track_mirror(uint16_t track_type);
+
+extern bool orct2_host_park_stats(struct Orct2ParkStats *out);
+
+extern bool orct2_host_stall_place(uint16_t ride_type,
+                                   int32_t tile_x,
+                                   int32_t tile_y,
+                                   uint8_t direction,
+                                   int64_t price,
+                                   uint16_t *out_ride_id,
+                                   char *err,
+                                   uintptr_t err_len);
+
+extern bool orct2_host_ride_set_price(uint16_t ride_id,
+                                      int64_t price,
+                                      bool primary,
+                                      char *err,
+                                      uintptr_t err_len);
+
+extern bool orct2_host_stall_detail(uint16_t ride_id, struct Orct2StallDetail *out);
 
 #ifdef __cplusplus
 }  // extern "C"

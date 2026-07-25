@@ -21,6 +21,7 @@ use crate::library::{self, LibraryDesign};
 use crate::pieces;
 use crate::program;
 use crate::report;
+use crate::stalls;
 
 /// Content kinds a client can accept, named after the OpenRouter model
 /// catalogue's `input_modalities` so a harness can pass a model's declared
@@ -101,6 +102,60 @@ impl std::ops::BitAnd for Modalities {
     }
 }
 
+/// Which eval goal's toolset a client wants, named after the driver's goal
+/// registry and read from the request target (`/mcp?goal=guest-services`).
+/// Coaster goals see the track-building tools, guest-services sees the stall
+/// tools; a client that names no goal sees everything.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum GoalFilter {
+    All,
+    Coaster,
+    GuestServices,
+}
+
+impl GoalFilter {
+    fn from_request_target(target: &str) -> GoalFilter {
+        let Some((_, query)) = target.split_once('?') else {
+            return GoalFilter::All;
+        };
+        match query
+            .split('&')
+            .find_map(|param| param.strip_prefix("goal="))
+        {
+            Some("guest-services") => GoalFilter::GuestServices,
+            Some("best-coaster") | Some("finish-the-coaster") => GoalFilter::Coaster,
+            // max-vomit builds track AND places stalls (fed riders vomit
+            // twice as hard), so it needs both toolsets.
+            _ => GoalFilter::All,
+        }
+    }
+
+    fn allows(self, tool: &str) -> bool {
+        let coaster_only = matches!(
+            tool,
+            "new_ride"
+                | "place_piece"
+                | "place_pieces"
+                | "valid_next_pieces"
+                | "get_state"
+                | "finish_and_test"
+                | "best_result"
+                | "best_screenshot"
+                | "undo_piece"
+                | "piece_geometry"
+                | "demolish"
+                | "search_track_designs"
+                | "get_track_design"
+        );
+        let stall_only = matches!(tool, "place_stall" | "set_stall_price" | "demolish_stall");
+        match self {
+            GoalFilter::All => true,
+            GoalFilter::Coaster => !stall_only,
+            GoalFilter::GuestServices => !coaster_only,
+        }
+    }
+}
+
 /// A request's claim on the park, read from the query string.
 struct Claim {
     lease: Option<String>,
@@ -128,10 +183,11 @@ impl Claim {
     fn authorise(&self, session: &mut Session) -> bool {
         if self.takes_ownership {
             // A new round takes the park, so the previous round's best test
-            // must not carry over into it.
+            // and stall roster must not carry over into it.
             session.lease = self.lease.clone();
             session.best_test = None;
             session.best_shot = None;
+            session.stalls.clear();
             return true;
         }
         match (&session.lease, &self.lease) {
@@ -241,6 +297,9 @@ struct Session {
     /// Park PNG captured at the moment `best_test` was set, so the scored
     /// coaster can be pictured even after it was demolished. Reset with it.
     best_shot: Option<Vec<u8>>,
+    /// Stalls placed through this session (guest-services goal); park_state
+    /// marks them so an agent can tell its own stalls from the scenario's.
+    stalls: Vec<u16>,
 }
 
 /// Best-ride excitement in a finish_and_test report, if any ride was rated.
@@ -295,6 +354,7 @@ fn handle_connection(stream: TcpStream, session: &mut Session) -> Result<(), Str
             Err(e) => return Err(e),
         };
         let modalities = Modalities::from_request_target(&target) & Modalities::server_side();
+        let goal = GoalFilter::from_request_target(&target);
         if method != "POST" {
             write_http(&mut stream, 405, "text/plain", b"method not allowed")?;
             continue;
@@ -313,7 +373,7 @@ fn handle_connection(stream: TcpStream, session: &mut Session) -> Result<(), Str
             continue;
         }
         let response = if Claim::from_request_target(&target).authorise(session) {
-            dispatch(&message, session, modalities)
+            dispatch(&message, session, modalities, goal)
         } else {
             // A stale agent from a finished round: refuse rather than let it
             // build in a park that now belongs to someone else.
@@ -398,7 +458,12 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
-fn dispatch(message: &Value, session: &mut Session, modalities: Modalities) -> Value {
+fn dispatch(
+    message: &Value,
+    session: &mut Session,
+    modalities: Modalities,
+    goal: GoalFilter,
+) -> Value {
     let id = message.get("id").cloned().unwrap_or(Value::Null);
     let method = message.get("method").and_then(Value::as_str).unwrap_or("");
     match method {
@@ -417,7 +482,7 @@ fn dispatch(message: &Value, session: &mut Session, modalities: Modalities) -> V
             )
         }
         "ping" => rpc_result(id, json!({})),
-        "tools/list" => rpc_result(id, json!({"tools": tool_definitions(modalities)})),
+        "tools/list" => rpc_result(id, json!({"tools": tool_definitions(modalities, goal)})),
         "tools/call" => {
             let name = message
                 .pointer("/params/name")
@@ -436,6 +501,15 @@ fn dispatch(message: &Value, session: &mut Session, modalities: Modalities) -> V
                     }),
                 );
             }
+            if !goal.allows(name) {
+                return rpc_result(
+                    id,
+                    json!({
+                        "content": [{"type": "text", "text": format!("{name} is unavailable: it does not belong to this session's eval goal")}],
+                        "isError": true,
+                    }),
+                );
+            }
             match call_tool(name, &args, session) {
                 Ok(content) => rpc_result(id, json!({"content": content, "isError": false})),
                 Err(text) => rpc_result(
@@ -448,12 +522,12 @@ fn dispatch(message: &Value, session: &mut Session, modalities: Modalities) -> V
     }
 }
 
-fn tool_definitions(modalities: Modalities) -> Value {
+fn tool_definitions(modalities: Modalities, goal: GoalFilter) -> Value {
     let mut tools = all_tool_definitions();
     if let Some(list) = tools.as_array_mut() {
         list.retain(|t| {
             let name = t.get("name").and_then(Value::as_str).unwrap_or_default();
-            modalities.contains(tool_modality(name))
+            modalities.contains(tool_modality(name)) && goal.allows(name)
         });
     }
     tools
@@ -540,6 +614,44 @@ fn all_tool_definitions() -> Value {
             "description": "Full piece sequence of one stock library design, in the same format place_pieces accepts (catalog names where known, raw numeric track types otherwise). Remember the similarity penalty: adapt, don't copy.",
             "inputSchema": {"type": "object", "required": ["name"], "properties": {
                 "name": {"type": "string", "description": "Design name as returned by search_track_designs"}
+            }}
+        },
+        {
+            "name": "place_stall",
+            "description": "Place a stall (shop) on a tile and open it: food, drink, shop (souvenirs), information_kiosk, toilets, cash_machine, or first_aid. The facing side must touch a footpath or guests cannot enter. Optionally sets the item price at the same time.",
+            "inputSchema": {"type": "object", "required": ["stall_type", "x", "y", "dir"], "properties": {
+                "stall_type": {"type": "string", "description": "One of: food, drink, shop, information_kiosk, toilets, cash_machine, first_aid"},
+                "x": {"type": "integer", "description": "Tile x"},
+                "y": {"type": "integer", "description": "Tile y"},
+                "dir": {"type": "integer", "minimum": 0, "maximum": 3, "description": "Facing: 0=-x, 1=+y, 2=+x, 3=-y; guests enter from this side"},
+                "price": {"type": "number", "description": "Item price in dollars, e.g. 1.5 = $1.50; omitted keeps the default"}
+            }}
+        },
+        {
+            "name": "set_stall_price",
+            "description": "Change the primary item price of a stall you placed. Price is in dollars; guests refuse prices they consider a rip-off.",
+            "inputSchema": {"type": "object", "required": ["ride_id", "price"], "properties": {
+                "ride_id": {"type": "integer", "description": "The stall's ride id, as returned by place_stall"},
+                "price": {"type": "number", "description": "Item price in dollars"}
+            }}
+        },
+        {
+            "name": "demolish_stall",
+            "description": "Remove a stall you placed, by ride id.",
+            "inputSchema": {"type": "object", "required": ["ride_id"], "properties": {
+                "ride_id": {"type": "integer"}
+            }}
+        },
+        {
+            "name": "park_state",
+            "description": "Whole-park counters: park rating (0-999), guest count, cash, and every stall with its price, lifetime profit, and customer count. Stalls placed through this session are marked.",
+            "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
+            "name": "advance_ticks",
+            "description": "Advance the game simulation (40 ticks = 1 game second) so guests move, buy, and the park rating reacts. Returns the park counters afterwards.",
+            "inputSchema": {"type": "object", "required": ["ticks"], "properties": {
+                "ticks": {"type": "integer", "description": "Ticks to simulate, 1-200000"}
             }}
         },
         {
@@ -912,8 +1024,104 @@ fn call_tool(name: &str, args: &Value, session: &mut Session) -> Result<Vec<Valu
             }
             Ok(text_content(resp))
         }
+        "place_stall" => {
+            let stall_type = args
+                .get("stall_type")
+                .and_then(Value::as_str)
+                .ok_or("stall_type required")?;
+            let (_, ride_type) = stalls::STALL_CATALOG
+                .iter()
+                .find(|(n, _)| *n == stall_type)
+                .copied()
+                .ok_or_else(|| {
+                    let names: Vec<&str> = stalls::STALL_CATALOG.iter().map(|&(n, _)| n).collect();
+                    format!(
+                        "unknown stall type: {stall_type} (known: {})",
+                        names.join(", ")
+                    )
+                })?;
+            let x = arg_i64(args, "x").ok_or("x required")? as i32;
+            let y = arg_i64(args, "y").ok_or("y required")? as i32;
+            let dir = (arg_i64(args, "dir").ok_or("dir required")? as u8) & 3;
+            let price = match args.get("price").and_then(Value::as_f64) {
+                Some(dollars) => (dollars * 10.0).round() as i64,
+                None => -1,
+            };
+            if !host::enable_sandbox() {
+                host::log("orct2-agent: warning: sandbox cheat failed");
+            }
+            let ride_id = host::stall_place(ride_type, x, y, dir, price)?;
+            session.stalls.push(ride_id);
+            Ok(text_content(json!({
+                "ride_id": ride_id,
+                "stall_type": stall_type,
+                "tile": {"x": x, "y": y, "dir": dir},
+                "open": true,
+            })))
+        }
+        "set_stall_price" => {
+            let ride_id = arg_i64(args, "ride_id").ok_or("ride_id required")? as u16;
+            let dollars = args
+                .get("price")
+                .and_then(Value::as_f64)
+                .ok_or("price required")?;
+            host::ride_set_price(ride_id, (dollars * 10.0).round() as i64, true)?;
+            Ok(text_content(json!({"ride_id": ride_id, "price": dollars})))
+        }
+        "demolish_stall" => {
+            let ride_id = arg_i64(args, "ride_id").ok_or("ride_id required")? as u16;
+            host::ride_demolish(ride_id)?;
+            session.stalls.retain(|&id| id != ride_id);
+            Ok(text_content(json!({"demolished": ride_id})))
+        }
+        "park_state" => Ok(text_content(park_state_json(&session.stalls)?)),
+        "advance_ticks" => {
+            let ticks = arg_i64(args, "ticks")
+                .ok_or("ticks required")?
+                .clamp(1, 200_000) as u32;
+            host::run_ticks(ticks);
+            let mut state = park_state_json(&session.stalls)?;
+            if let Some(obj) = state.as_object_mut() {
+                obj.insert("ticks_advanced".into(), json!(ticks));
+            }
+            Ok(text_content(state))
+        }
         _ => Err(format!("unknown tool: {name}")),
     }
+}
+
+/// Park counters plus a stall roster, marking stalls this session placed.
+fn park_state_json(session_stalls: &[u16]) -> Result<Value, String> {
+    let park = host::park_stats().ok_or("no park loaded")?;
+    let mut stalls = Vec::new();
+    for index in 0..host::ride_count() {
+        let Some(stats) = host::ride_stats(index) else {
+            continue;
+        };
+        if !stats.is_stall {
+            continue;
+        }
+        let Some(detail) = host::stall_detail(stats.id) else {
+            continue;
+        };
+        stalls.push(json!({
+            "ride_id": stats.id,
+            "ride_type": stats.ride_type,
+            "status": report::status_name(stats.status),
+            "placed_this_session": session_stalls.contains(&stats.id),
+            "price": detail.price as f64 / 10.0,
+            "profit": detail.profit as f64 / 10.0,
+            "total_customers": detail.total_customers,
+        }));
+    }
+    Ok(json!({
+        "park_rating": park.rating,
+        "guests_count": park.guests,
+        "cash": park.cash as f64 / 10.0,
+        "vomit_count": park.vomit,
+        "vomit_events": park.vomit_events,
+        "stalls": stalls,
+    }))
 }
 
 fn cursor_json(c: &host::TrackCursor) -> Value {
@@ -936,7 +1144,7 @@ mod tests {
         let mut session = Session::default();
         let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                          "params": {"protocolVersion": "2025-03-26"}});
-        let resp = dispatch(&msg, &mut session, Modalities::ALL);
+        let resp = dispatch(&msg, &mut session, Modalities::ALL, GoalFilter::All);
         assert_eq!(
             resp.pointer("/result/protocolVersion")
                 .and_then(Value::as_str),
@@ -982,7 +1190,7 @@ mod tests {
     fn dispatch_unknown_method_is_rpc_error() {
         let mut session = Session::default();
         let msg = json!({"jsonrpc": "2.0", "id": 2, "method": "bogus"});
-        let resp = dispatch(&msg, &mut session, Modalities::ALL);
+        let resp = dispatch(&msg, &mut session, Modalities::ALL, GoalFilter::All);
         assert_eq!(
             resp.pointer("/error/code").and_then(Value::as_i64),
             Some(-32601)
@@ -993,7 +1201,7 @@ mod tests {
     fn tools_list_contains_the_full_toolset() {
         let mut session = Session::default();
         let msg = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"});
-        let resp = dispatch(&msg, &mut session, Modalities::ALL);
+        let resp = dispatch(&msg, &mut session, Modalities::ALL, GoalFilter::All);
         let tools = resp
             .pointer("/result/tools")
             .and_then(Value::as_array)
@@ -1024,7 +1232,7 @@ mod tests {
     fn text_only_clients_never_see_the_screenshot_tool() {
         let mut session = Session::default();
         let msg = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"});
-        let resp = dispatch(&msg, &mut session, Modalities::TEXT);
+        let resp = dispatch(&msg, &mut session, Modalities::TEXT, GoalFilter::All);
         let names: Vec<&str> = resp
             .pointer("/result/tools")
             .and_then(Value::as_array)
@@ -1041,7 +1249,7 @@ mod tests {
         let mut session = Session::default();
         let msg = json!({"jsonrpc": "2.0", "id": 6, "method": "tools/call",
                          "params": {"name": "screenshot", "arguments": {}}});
-        let resp = dispatch(&msg, &mut session, Modalities::TEXT);
+        let resp = dispatch(&msg, &mut session, Modalities::TEXT, GoalFilter::All);
         assert_eq!(
             resp.pointer("/result/isError").and_then(Value::as_bool),
             Some(true)
@@ -1155,13 +1363,104 @@ mod tests {
     }
 
     #[test]
+    fn goal_filters_parse_from_the_request_target() {
+        assert_eq!(GoalFilter::from_request_target("/mcp"), GoalFilter::All);
+        assert_eq!(
+            GoalFilter::from_request_target("/mcp?goal=guest-services"),
+            GoalFilter::GuestServices
+        );
+        assert_eq!(
+            GoalFilter::from_request_target("/mcp?goal=finish-the-coaster&lease=r1"),
+            GoalFilter::Coaster
+        );
+        assert_eq!(
+            GoalFilter::from_request_target("/mcp?goal=best-coaster"),
+            GoalFilter::Coaster
+        );
+        // max-vomit needs the track tools AND the stall tools (fed riders
+        // vomit hardest), so it sees everything.
+        assert_eq!(
+            GoalFilter::from_request_target("/mcp?goal=max-vomit"),
+            GoalFilter::All
+        );
+        // Unknown goals fail open: the client sees everything.
+        assert_eq!(
+            GoalFilter::from_request_target("/mcp?goal=zoo-keeper"),
+            GoalFilter::All
+        );
+    }
+
+    #[test]
+    fn coaster_goals_hide_stall_tools_and_vice_versa() {
+        assert!(GoalFilter::Coaster.allows("place_piece"));
+        assert!(!GoalFilter::Coaster.allows("place_stall"));
+        assert!(GoalFilter::GuestServices.allows("place_stall"));
+        assert!(!GoalFilter::GuestServices.allows("finish_and_test"));
+        // Shared tools stay visible on both sides.
+        for tool in ["screenshot", "park_state", "advance_ticks"] {
+            assert!(GoalFilter::Coaster.allows(tool), "{tool}");
+            assert!(GoalFilter::GuestServices.allows(tool), "{tool}");
+        }
+    }
+
+    #[test]
+    fn guest_services_tools_list_has_stall_tools_only() {
+        let mut session = Session::default();
+        let msg = json!({"jsonrpc": "2.0", "id": 7, "method": "tools/list"});
+        let resp = dispatch(
+            &msg,
+            &mut session,
+            Modalities::ALL,
+            GoalFilter::GuestServices,
+        );
+        let names: Vec<&str> = resp
+            .pointer("/result/tools")
+            .and_then(Value::as_array)
+            .expect("tools array")
+            .iter()
+            .filter_map(|t| t.get("name").and_then(Value::as_str))
+            .collect();
+        assert!(names.contains(&"place_stall"));
+        assert!(names.contains(&"park_state"));
+        assert!(!names.contains(&"new_ride"));
+        assert!(!names.contains(&"finish_and_test"));
+    }
+
+    #[test]
+    fn wrong_goal_tool_call_is_refused() {
+        let mut session = Session::default();
+        let msg = json!({"jsonrpc": "2.0", "id": 8, "method": "tools/call",
+                         "params": {"name": "place_stall", "arguments": {}}});
+        let resp = dispatch(&msg, &mut session, Modalities::ALL, GoalFilter::Coaster);
+        assert_eq!(
+            resp.pointer("/result/isError").and_then(Value::as_bool),
+            Some(true)
+        );
+        let text = resp
+            .pointer("/result/content/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(text.contains("eval goal"), "got {text}");
+    }
+
+    #[test]
+    fn a_new_claim_clears_the_session_stall_roster() {
+        let mut session = Session {
+            stalls: vec![3, 4],
+            ..Default::default()
+        };
+        Claim::from_request_target("/mcp?lease=r2&claim=1").authorise(&mut session);
+        assert!(session.stalls.is_empty());
+    }
+
+    #[test]
     fn search_without_a_library_errors_cleanly() {
         // The test stub host has no track library; the tool should report
         // that as a tool error, not panic.
         let mut session = Session::default();
         let msg = json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call",
                          "params": {"name": "search_track_designs", "arguments": {}}});
-        let resp = dispatch(&msg, &mut session, Modalities::ALL);
+        let resp = dispatch(&msg, &mut session, Modalities::ALL, GoalFilter::All);
         assert_eq!(
             resp.pointer("/result/isError").and_then(Value::as_bool),
             Some(true)
@@ -1173,7 +1472,7 @@ mod tests {
         let mut session = Session::default();
         let msg = json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
                          "params": {"name": "get_state", "arguments": {}}});
-        let resp = dispatch(&msg, &mut session, Modalities::ALL);
+        let resp = dispatch(&msg, &mut session, Modalities::ALL, GoalFilter::All);
         assert_eq!(
             resp.pointer("/result/isError").and_then(Value::as_bool),
             Some(true)

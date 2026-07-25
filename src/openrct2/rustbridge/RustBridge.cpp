@@ -21,10 +21,13 @@
     #include "../actions/ride/RideCreateAction.h"
     #include "../actions/ride/RideDemolishAction.h"
     #include "../actions/ride/RideEntranceExitPlaceAction.h"
+    #include "../actions/ride/RideSetPriceAction.h"
     #include "../actions/ride/RideSetStatusAction.h"
     #include "../actions/track/TrackPlaceAction.h"
     #include "../actions/track/TrackRemoveAction.h"
     #include "../drawing/Drawing.h"
+    #include "../entity/EntityList.h"
+    #include "../entity/Litter.h"
     #include "../OpenRCT2.h"
     #include "../core/Console.hpp"
     #include "../core/FileScanner.h"
@@ -58,6 +61,11 @@ using namespace OpenRCT2;
 
 namespace
 {
+    // Guest vomit events since process start (game logic is single-threaded).
+    // Snapshotted into Orct2ParkStats, so the report's before/after machinery
+    // turns it into a per-run delta.
+    uint64_t gVomitEvents = 0;
+
     void CopyError(char* err, size_t errLen, const std::string& message)
     {
         if (err != nullptr && errLen > 0)
@@ -671,6 +679,138 @@ bool orct2_host_graphics_available(void)
     return !gOpenRCT2NoGraphics;
 }
 
+bool orct2_host_park_stats(Orct2ParkStats* out)
+{
+    if (out == nullptr)
+    {
+        return false;
+    }
+    // The max-vomit goal is scored on this: every pile a guest has thrown up
+    // onto the ground is a live Litter entity until swept.
+    uint32_t vomit = 0;
+    for (const auto* litter : EntityList<Litter>())
+    {
+        if (litter->subType == Litter::Type::vomit || litter->subType == Litter::Type::vomitAlt)
+        {
+            vomit++;
+        }
+    }
+    const auto& park = getGameState().park;
+    *out = Orct2ParkStats{
+        .rating = park.rating,
+        .guests = park.numGuestsInPark,
+        .cash = park.cash,
+        .vomit = vomit,
+        .vomit_events = gVomitEvents,
+    };
+    return true;
+}
+
+bool orct2_host_ride_set_price(uint16_t ride_id, int64_t price, bool primary, char* err, size_t err_len)
+{
+    auto action = GameActions::RideSetPriceAction(RideId::FromUnderlying(ride_id), price, primary);
+    GameActions::Result result;
+    return ExecuteForBridge(action, err, err_len, result);
+}
+
+bool orct2_host_stall_detail(uint16_t ride_id, Orct2StallDetail* out)
+{
+    if (out == nullptr)
+    {
+        return false;
+    }
+    const auto* ride = GetRide(RideId::FromUnderlying(ride_id));
+    if (ride == nullptr)
+    {
+        return false;
+    }
+    *out = Orct2StallDetail{
+        .profit = ride->totalProfit,
+        .total_customers = ride->totalCustomers,
+        .price = ride->price[0],
+    };
+    return true;
+}
+
+// Creates a stall, places its single flat track piece at surface height on
+// the tile (facing `direction` — the side guests enter from), optionally sets
+// the primary price, and opens it. Any failure after creation demolishes the
+// half-built ride so a rejected plan leaves nothing behind.
+bool orct2_host_stall_place(
+    uint16_t ride_type, int32_t tile_x, int32_t tile_y, uint8_t direction, int64_t price, uint16_t* out_ride_id,
+    char* err, size_t err_len)
+{
+    if (out_ride_id == nullptr)
+    {
+        return false;
+    }
+    auto subtype = FindSubtypeForRideType(ride_type);
+    if (subtype == kObjectEntryIndexNull)
+    {
+        CopyError(err, err_len, "no ride object available for this stall type in the loaded park");
+        return false;
+    }
+    auto create = GameActions::RideCreateAction(
+        ride_type, subtype, 0, 0, getGameState().lastEntranceStyle, RideInspection::every30Minutes);
+    GameActions::Result createResult;
+    if (!ExecuteForBridge(create, err, err_len, createResult))
+    {
+        return false;
+    }
+    auto rideId = createResult.getData<RideId>();
+    auto demolish = [&rideId]() {
+        auto action = GameActions::RideDemolishAction(rideId, GameActions::RideModifyType::demolish);
+        GameActions::Result result;
+        ExecuteForBridge(action, nullptr, 0, result);
+    };
+
+    const auto* ride = GetRide(rideId);
+    if (ride == nullptr || ride->getRideTypeDescriptor().RatingsData.Type != RatingsCalculationType::Stall)
+    {
+        demolish();
+        CopyError(err, err_len, "ride type " + std::to_string(ride_type) + " is not a stall");
+        return false;
+    }
+
+    // Stalls are one flat track element on the surface; same z rounding as
+    // coaster starts (TrackPlaceAction needs a 16-unit step).
+    auto trackType = ride->getRideTypeDescriptor().StartTrackPiece;
+    auto surface = TileElementHeight(CoordsXY{ tile_x * kCoordsXYStep + 16, tile_y * kCoordsXYStep + 16 });
+    auto z = (surface + 15) & ~15;
+    CoordsXYZD origin{ tile_x * kCoordsXYStep, tile_y * kCoordsXYStep, z, static_cast<Direction>(direction & 3) };
+    auto place = GameActions::TrackPlaceAction(
+        rideId, trackType, ride->type, origin, 0 /*brakeSpeed*/, 0 /*colour*/, 4 /*seatRotation*/,
+        SelectedLiftAndInverted{}, false /*fromTrackDesign*/);
+    GameActions::Result placeResult;
+    if (!ExecuteForBridge(place, err, err_len, placeResult))
+    {
+        demolish();
+        return false;
+    }
+
+    if (price >= 0)
+    {
+        auto setPrice = GameActions::RideSetPriceAction(rideId, price, true);
+        GameActions::Result priceResult;
+        if (!ExecuteForBridge(setPrice, err, err_len, priceResult))
+        {
+            demolish();
+            return false;
+        }
+    }
+
+    auto open = GameActions::RideSetStatusAction(rideId, RideStatus::open);
+    GameActions::Result openResult;
+    if (!ExecuteForBridge(open, err, err_len, openResult))
+    {
+        demolish();
+        return false;
+    }
+
+    *out_ride_id = rideId.ToUnderlying();
+    return true;
+}
+
 bool orct2_host_capture(const char* path, int32_t zoom, uint8_t rotation, bool fit_track, bool xray)
 {
     if (path == nullptr)
@@ -733,6 +873,11 @@ bool orct2_host_capture(const char* path, int32_t zoom, uint8_t rotation, bool f
 
 namespace OpenRCT2::RustBridge
 {
+    void CountVomit()
+    {
+        gVomitEvents++;
+    }
+
     void Initialise()
     {
         auto result = orct2_agent_init();

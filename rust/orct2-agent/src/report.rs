@@ -15,9 +15,51 @@ pub struct EvalReport {
     /// Tile bbox + z range of all track in the park; None when trackless.
     pub bounds: Option<host::TrackBounds>,
     pub rides: Vec<RideReport>,
+    /// Whole-park counters; the guest-services goal is scored from these.
+    pub park: Option<ParkReport>,
     /// Closest stock library design to the built track; the driver penalises
     /// high similarity. None when nothing was built or no library is present.
     pub similarity: Option<SimilarityReport>,
+}
+
+/// Park-level metrics for goals judged on the park rather than one ride.
+#[derive(Debug, Serialize)]
+pub struct ParkReport {
+    /// Park rating at the end of the eval, 0-999.
+    pub park_rating: u16,
+    /// Rating when the program ran, before the simulation ticked.
+    pub park_rating_start: Option<u16>,
+    pub park_rating_delta: Option<i32>,
+    pub guests_count: u32,
+    /// Vomit piles on the ground at the end of the eval. Undercounts: piles
+    /// vanish to handymen and to the engine's 500-litter cap.
+    pub vomit_count: u32,
+    /// Change in vomit piles since the program ran. Kept for colour; the
+    /// score uses vomit_events.
+    pub vomit_delta: Option<i64>,
+    /// Times guests threw up during the run (the Guest::throwUp hook) — the
+    /// max-vomit goal's score. A true cumulative count, immune to sweeping
+    /// and the litter cap. None when no program ran.
+    pub vomit_events: Option<i64>,
+    /// Combined profit of the stalls the program placed, in dollars. None
+    /// when the program placed no stalls.
+    pub stall_profit: Option<f64>,
+    /// Every stall standing in the park; `placed_by_program` marks the ones
+    /// this eval's plan created.
+    pub stalls: Vec<StallReport>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StallReport {
+    pub id: u16,
+    pub ride_type: u16,
+    pub status: &'static str,
+    pub placed_by_program: bool,
+    /// Primary item price in dollars.
+    pub price: f64,
+    /// Lifetime profit in dollars (income minus running costs).
+    pub profit: f64,
+    pub total_customers: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,6 +98,11 @@ pub fn status_name(status: u8) -> &'static str {
 
 fn fixed2dp(raw: i16) -> f32 {
     f32::from(raw) / 100.0
+}
+
+/// The game's fixed-point money64 (10 units = $1.00) as dollars.
+fn money_to_dollars(raw: i64) -> f64 {
+    raw as f64 / 10.0
 }
 
 /// Converts the raw total ride length (16.16 fixed-point metres, summed over
@@ -107,15 +154,33 @@ pub fn build(
 ) -> EvalReport {
     let similarity = match (agent_pieces, program.as_ref()) {
         (Some(pieces), _) => library_similarity(pieces, library),
-        (None, Some(outcome)) => library_similarity(&outcome.placed_types, library),
+        (None, Some(outcome)) => {
+            // The finish goal's committed prefix is not the model's design;
+            // score only what the model added.
+            let skip = outcome.similarity_skip.min(outcome.placed_types.len());
+            library_similarity(&outcome.placed_types[skip..], library)
+        }
         (None, None) => None,
     };
     let mut rides = Vec::new();
+    let mut stalls = Vec::new();
+    let program_stalls: &[u16] = program.as_ref().map_or(&[], |o| &o.stall_ids);
     for index in 0..host::ride_count() {
         let Some(stats) = host::ride_stats(index) else {
             continue;
         };
         if stats.is_stall {
+            if let Some(detail) = host::stall_detail(stats.id) {
+                stalls.push(StallReport {
+                    id: stats.id,
+                    ride_type: stats.ride_type,
+                    status: status_name(stats.status),
+                    placed_by_program: program_stalls.contains(&stats.id),
+                    price: money_to_dollars(detail.price),
+                    profit: money_to_dollars(detail.profit),
+                    total_customers: detail.total_customers,
+                });
+            }
             continue;
         }
         if let Some(only) = only_ride {
@@ -148,10 +213,33 @@ pub fn build(
             num_inversions: detail.num_inversions,
         });
     }
+    let park = host::park_stats().map(|now| {
+        let before = program.as_ref().and_then(|o| o.park_before);
+        let rating_start = before.map(|b| b.rating);
+        let profit_of_program_stalls = (!program_stalls.is_empty()).then(|| {
+            stalls
+                .iter()
+                .filter(|s| s.placed_by_program)
+                .map(|s| s.profit)
+                .sum::<f64>()
+        });
+        ParkReport {
+            park_rating: now.rating,
+            park_rating_start: rating_start,
+            park_rating_delta: rating_start.map(|start| i32::from(now.rating) - i32::from(start)),
+            guests_count: now.guests,
+            vomit_count: now.vomit,
+            vomit_delta: before.map(|b| i64::from(now.vomit) - i64::from(b.vomit)),
+            vomit_events: before.map(|b| now.vomit_events.saturating_sub(b.vomit_events) as i64),
+            stall_profit: profit_of_program_stalls,
+            stalls,
+        }
+    });
     EvalReport {
         program,
         bounds: host::track_bounds(),
         rides,
+        park,
         similarity,
     }
 }
@@ -177,6 +265,14 @@ mod tests {
         // Exactly one tile-metre boundary and zero.
         assert_eq!(ride_length_metres(1 << 16), 1);
         assert_eq!(ride_length_metres(0), 0);
+    }
+
+    #[test]
+    fn money_converts_at_ten_units_per_dollar() {
+        // money64: 15 raw = $1.50 (the game's MONEY fixed point).
+        assert!((money_to_dollars(15) - 1.5).abs() < f64::EPSILON);
+        assert!((money_to_dollars(-230) - -23.0).abs() < f64::EPSILON);
+        assert!((money_to_dollars(0)).abs() < f64::EPSILON);
     }
 
     #[test]

@@ -159,6 +159,7 @@ tr.winner td { background: rgba(217,165,32,.25); }
 .badge-warn { background: var(--panel-deep); color: #f5e6c8; }
 .stats { display: flex; flex-wrap: wrap; gap: .15rem .9rem; font-size: .78rem; }
 .footnote { font-size: .7rem; margin: .5rem 0 0; }
+.goal-heading { margin: 1.1rem 0 .3rem; font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; }
 
 /* Model detail page: rounds tile as wide as the viewport allows. */
 .round-grid { display: grid; grid-template-columns: 1fr; gap: 0 .9rem; align-items: start; }

@@ -20,6 +20,11 @@ namespace OpenRCT2::RustBridge
     // Forwards a game tick to the Rust agent.
     void Tick(uint32_t tick);
 
+    // Records one guest vomit event. Called from Guest::throwUp so the
+    // max-vomit eval can score cumulative vomiting, immune to handymen
+    // sweeping piles and the engine's 500-litter cap.
+    void CountVomit();
+
     // Asks the Rust agent to log its end-of-eval ride summary.
     void EvalSummary();
 
