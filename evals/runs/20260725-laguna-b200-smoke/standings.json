@@ -1,0 +1,21 @@
+{
+  "goal": "best-coaster",
+  "mode": "design",
+  "standings": [
+    {
+      "model": "poolside/Laguna-S-2.1",
+      "best_score": null,
+      "best_metrics": null,
+      "best_excitement": null,
+      "best_raw_excitement": null,
+      "best_similarity": null,
+      "attempts": [
+        {
+          "round": 1,
+          "summary": "BUILD FAILED at piece 72 (72/89 placed): piece 'flat' rejected at cursor (x=0, y=90, z=112, dir=0): Off edge of map!",
+          "lookups": []
+        }
+      ]
+    }
+  ]
+}

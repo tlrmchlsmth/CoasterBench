@@ -1,0 +1,28 @@
+{
+  "goal": "finish-the-coaster",
+  "goal_config": {
+    "prefix_file": "finish_prefix_51.json",
+    "prefix_pieces": 16,
+    "completion_budget": 80,
+    "prefix_end_cursor": {
+      "x": 45,
+      "y": 57,
+      "z": 160,
+      "dir": 3,
+      "bank": 0,
+      "slope": 0
+    }
+  },
+  "mode": "design",
+  "harness": "driver-api",
+  "models": [
+    "poolside/Laguna-S-2.1"
+  ],
+  "rounds": 1,
+  "ticks": 25000,
+  "ride_type": 51,
+  "scenario": "BigMapTest.sv6",
+  "no_graphics": true,
+  "endpoint": "http://127.0.0.1:8010/v1",
+  "similarity_grace": 0.5
+}

@@ -1,0 +1,21 @@
+{
+  "goal": "finish-the-coaster",
+  "mode": "design",
+  "standings": [
+    {
+      "model": "poolside/Laguna-S-2.1",
+      "best_score": null,
+      "best_metrics": null,
+      "best_excitement": null,
+      "best_raw_excitement": null,
+      "best_similarity": null,
+      "attempts": [
+        {
+          "round": 1,
+          "summary": "BUILD FAILED at piece 19 (19/61 placed): piece 'down_25' rejected at cursor (x=45, y=54, z=120, dir=3): Raise or lower land first",
+          "lookups": []
+        }
+      ]
+    }
+  ]
+}

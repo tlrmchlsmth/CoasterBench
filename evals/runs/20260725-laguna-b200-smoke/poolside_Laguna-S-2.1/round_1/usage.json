@@ -1,0 +1,6 @@
+{
+  "harness": "driver-api",
+  "model": "poolside/Laguna-S-2.1",
+  "input_tokens": 31987,
+  "output_tokens": 6455
+}
