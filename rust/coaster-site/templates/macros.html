@@ -26,7 +26,7 @@
 {# A round card: ratings, library lookups, the submitted program, captures. #}
 {% macro round_block(round, model) %}
 <div class="round{% if round.build_error.is_some() %} round-failed{% endif %}">
-  <h3>Round {{ round.number }}
+  <h3>{% match round.scenario %}{% when Some(scenario) %}<span class="badge">{{ scenario }}</span> {% when None %}{% endmatch %}Round {{ round.number }}
   {%- match round.badge %}
   {%- when Some(badge) %} <span class="badge {{ badge.class }}">{{ badge.text }}</span>
   {%- when None %}

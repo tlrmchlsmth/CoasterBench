@@ -165,6 +165,8 @@ pub struct IndexRow {
     pub mode: String,
     pub coaster: String,
     pub harness: String,
+    /// "single" or "N parks" — the scenario-count facet value.
+    pub parks: String,
     pub model: String,
     pub thumb: Option<String>,
     pub place: String,
@@ -223,6 +225,9 @@ pub struct Badge {
 
 pub struct RoundView {
     pub number: u32,
+    /// The generated park this round played on; shown as a chip on the round
+    /// heading in multi-scenario runs.
+    pub scenario: Option<String>,
     /// Link to this round's trace page, when a trace was recorded.
     pub trace_href: Option<String>,
     pub trace_events: usize,

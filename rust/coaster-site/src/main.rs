@@ -195,16 +195,44 @@ fn round_shots(round: &Round, out: &Path, run: &EvalRun, model: &str) -> Result<
         arts.push((shot, "x-ray".to_string()));
     }
     let mut shots = Vec::with_capacity(arts.len());
+    // Scenario-nested rounds reuse round numbers, so the copied capture name
+    // needs the scenario to stay unique within the model's asset dir.
+    let scenario_prefix = round
+        .scenario
+        .as_deref()
+        .map(|s| format!("{}_", model::sanitise_name(s)))
+        .unwrap_or_default();
     for (art, label) in arts {
         let rel = Path::new("assets")
             .join(&run.name)
             .join(model)
-            .join(format!("round_{}_{}", round.number, art.name));
+            .join(format!(
+                "{scenario_prefix}round_{}_{}",
+                round.number, art.name
+            ));
         if let Some(src) = place_art(art, out, &rel)? {
             shots.push(Shot { src, label });
         }
     }
     Ok(shots)
+}
+
+/// "round 3/6", or "seed_4 round 3 · 5/8 parks" on a multi-scenario run: the
+/// best-round cell also says where the best came from and how reliably the
+/// model scored across parks.
+fn best_label(run: &EvalRun, model: &ModelRun) -> String {
+    let Some(best) = model.best() else {
+        return String::new();
+    };
+    match &best.scenario {
+        Some(scenario) => format!(
+            "{scenario} round {} · {}/{} parks",
+            best.number,
+            model.scenarios_scored(&run.scenarios),
+            run.scenarios.len()
+        ),
+        None => format!("round {}/{}", best.number, model.rounds.len()),
+    }
 }
 
 fn standings(run: &EvalRun) -> Vec<StandingRow> {
@@ -214,20 +242,23 @@ fn standings(run: &EvalRun) -> Vec<StandingRow> {
         .map(|(i, model)| {
             let best = model.best();
             let ride = best.and_then(|r| r.ride.as_ref());
+            let score = if run.scenarios.is_empty() {
+                best.map(|r| format!("{:.2}", r.excitement()))
+            } else {
+                best.map(|_| format!("{:.2}", run.score_of(model)))
+            };
             StandingRow {
                 place: place_label(i + 1),
                 model: model.model.clone(),
                 is_winner: i == 0 && best.is_some(),
-                score: best.map(|r| format!("{:.2}", r.excitement())),
+                score,
                 intensity: fmt_opt(ride.and_then(|r| r.intensity)),
                 nausea: fmt_opt(ride.and_then(|r| r.nausea)),
                 similarity: fmt_opt(
                     best.and_then(|r| r.similarity.as_ref())
                         .map(|s| s.similarity),
                 ),
-                best_round: best.map_or_else(String::new, |r| {
-                    format!("round {}/{}", r.number, model.rounds.len())
-                }),
+                best_round: best_label(run, model),
                 usage: usage_cell(model),
             }
         })
@@ -241,11 +272,17 @@ fn model_href(run: &EvalRun, model: &str) -> String {
 
 /// One round's session trace lives on its own page: a long round runs to
 /// hundreds of events, which would bury the ratings on the model page.
-fn trace_href(run: &EvalRun, model: &str, round: u32) -> String {
+fn trace_href(run: &EvalRun, model: &str, round: &Round) -> String {
+    let scenario = round
+        .scenario
+        .as_deref()
+        .map(|s| format!("{}-", model::sanitise_name(s)))
+        .unwrap_or_default();
     format!(
-        "trace-{}-{}-r{round}.html",
+        "trace-{}-{}-{scenario}r{}.html",
         run.name,
-        model::sanitise_name(model)
+        model::sanitise_name(model),
+        round.number
     )
 }
 
@@ -341,7 +378,7 @@ fn build_trace_page(
         })
         .collect();
 
-    let path = trace_href(run, &model.model, round.number);
+    let path = trace_href(run, &model.model, round);
     let page = view::TracePage {
         chrome: Chrome::new(
             &format!(
@@ -384,8 +421,8 @@ fn build_model_view(
         let stats = round_stats(round);
         rounds.push(RoundView {
             number: round.number,
-            trace_href: (!round.trace.is_empty())
-                .then(|| trace_href(run, &model.model, round.number)),
+            scenario: round.scenario.clone(),
+            trace_href: (!round.trace.is_empty()).then(|| trace_href(run, &model.model, round)),
             trace_events: round.trace.len(),
             trace_rejections: round.trace.iter().filter(|e| e.is_rejection()).count(),
             badge: round_badge(round, stats.as_ref()),
@@ -412,7 +449,7 @@ fn build_model_view(
 }
 
 /// The headline numbers at the top of a model detail page.
-fn model_stats(model: &ModelRun) -> Vec<Stat> {
+fn model_stats(run: &EvalRun, model: &ModelRun) -> Vec<Stat> {
     let stat = |label: &str, value: String, class: &str| Stat {
         label: label.to_string(),
         value,
@@ -421,10 +458,14 @@ fn model_stats(model: &ModelRun) -> Vec<Stat> {
     let best = model.best();
     let ride = best.and_then(|r| r.ride.as_ref());
     let rated = model.rounds.iter().filter(|r| r.excitement() > 0.0).count();
+    let multi = !run.scenarios.is_empty();
     let mut stats = vec![
         stat(
-            "score",
-            best.map_or_else(|| "—".to_string(), |r| format!("{:.2}", r.excitement())),
+            if multi { "mean best score" } else { "score" },
+            best.map_or_else(
+                || "—".to_string(),
+                |_| format!("{:.2}", run.score_of(model)),
+            ),
             "rating-excitement",
         ),
         stat(
@@ -439,7 +480,13 @@ fn model_stats(model: &ModelRun) -> Vec<Stat> {
         ),
         stat(
             "best round",
-            best.map_or_else(|| "—".to_string(), |r| format!("{}", r.number)),
+            best.map_or_else(
+                || "—".to_string(),
+                |r| match &r.scenario {
+                    Some(scenario) => format!("{scenario} r{}", r.number),
+                    None => format!("{}", r.number),
+                },
+            ),
             "",
         ),
         stat(
@@ -448,6 +495,24 @@ fn model_stats(model: &ModelRun) -> Vec<Stat> {
             "",
         ),
     ];
+    if multi {
+        stats.push(stat(
+            "parks scored",
+            format!(
+                "{}/{}",
+                model.scenarios_scored(&run.scenarios),
+                run.scenarios.len()
+            ),
+            "",
+        ));
+        if let Some(best) = best {
+            stats.push(stat(
+                "best park score",
+                format!("{:.2}", best.excitement()),
+                "rating-excitement",
+            ));
+        }
+    }
     if let Some(sim) = best.and_then(|r| r.similarity.as_ref()) {
         stats.push(stat("similarity", format!("{:.2}", sim.similarity), "dim"));
     }
@@ -492,13 +557,18 @@ fn build_model_page(
         place: place_label(place),
         of_models: run.models.len(),
         context: format!(
-            "{} · {} · {} · {}",
+            "{} · {} · {}{} · {}",
             run.mode,
             run.ride_name(),
             run.harness,
+            if run.scenarios.is_empty() {
+                String::new()
+            } else {
+                format!(" · {} parks", run.scenarios.len())
+            },
             view::mode_tagline(&run.mode)
         ),
-        stats: model_stats(model),
+        stats: model_stats(run, model),
         model: view,
     };
     write_page(&out.join(&path), &page.render()?)
@@ -573,6 +643,16 @@ fn thumbnail(
     Ok(Some(rel.to_string_lossy().replace('\\', "/")))
 }
 
+/// The scenario-count facet value: "single", or "N parks" for a
+/// multi-scenario run.
+fn parks_label(run: &EvalRun) -> String {
+    if run.scenarios.is_empty() {
+        "single".to_string()
+    } else {
+        format!("{} parks", run.scenarios.len())
+    }
+}
+
 /// Index rows: one per model per run, best score first (the leaderboard
 /// question is "who built the best coaster", not "what ran most recently").
 /// The client-side sorter can reorder by any column from here.
@@ -597,19 +677,18 @@ fn index_rows(runs: &[EvalRun], store: &ArtStore, out: &Path) -> Result<Vec<Inde
                 mode: run.mode.clone(),
                 coaster: run.ride_name(),
                 harness: run.harness.clone(),
+                parks: parks_label(run),
                 model: model.model.clone(),
                 thumb,
                 place: place_label(i + 1),
                 is_winner: i == 0 && best.is_some(),
-                sort_score: best.map_or(0.0, |r| r.excitement()),
+                sort_score: run.score_of(model),
                 sort_intensity: ride.and_then(|r| r.intensity).unwrap_or(0.0),
                 sort_nausea: ride.and_then(|r| r.nausea).unwrap_or(0.0),
-                score: best.map(|r| format!("{:.2}", r.excitement())),
+                score: best.map(|_| format!("{:.2}", run.score_of(model))),
                 intensity: fmt_opt(ride.and_then(|r| r.intensity)),
                 nausea: fmt_opt(ride.and_then(|r| r.nausea)),
-                best_round: best.map_or_else(String::new, |r| {
-                    format!("round {}/{}", r.number, model.rounds.len())
-                }),
+                best_round: best_label(run, model),
                 usage: usage_cell(model),
             });
         }
@@ -651,7 +730,7 @@ fn contenders(runs: &[EvalRun], store: &ArtStore, out: &Path) -> Result<Vec<view
                 mode: run.mode.clone(),
                 harness: run.harness.clone(),
                 thumb,
-                score: best.map(|r| r.excitement()),
+                score: best.map(|_| run.score_of(model)),
                 intensity: ride.and_then(|r| r.intensity),
                 nausea: ride.and_then(|r| r.nausea),
                 similarity: best
@@ -669,7 +748,7 @@ fn contenders(runs: &[EvalRun], store: &ArtStore, out: &Path) -> Result<Vec<view
             });
         }
     }
-    // Group by scenario then best-first, so the dropdown reads top-down within
+    // Group by coaster then best-first, so the dropdown reads top-down within
     // each coaster and the default pairing is the tightest fight available.
     contenders.sort_by(|a, b| {
         a.coaster.cmp(&b.coaster).then(
@@ -681,24 +760,23 @@ fn contenders(runs: &[EvalRun], store: &ArtStore, out: &Path) -> Result<Vec<view
     Ok(contenders)
 }
 
-/// Default matchup: the top two contenders of the most-contested scenario, so
-/// the page opens on a real fight rather than an empty picker. A scenario is a
-/// (coaster, mode) pair, matching the picker's same-scenario rule.
+/// Default matchup: the top two contenders of the most-contested matchup
+/// class, so the page opens on a real fight rather than an empty picker. A
+/// matchup class is a (coaster, mode) pair — the picker's same-class rule.
+/// (Not to be confused with scenario parks, which multi-scenario runs play
+/// on; the head-to-head compares like coaster types regardless of park.)
 fn default_pair(contenders: &[view::Contender]) -> (String, String) {
-    let mut by_scenario: std::collections::HashMap<(&str, &str), Vec<&view::Contender>> =
+    let mut by_matchup: std::collections::HashMap<(&str, &str), Vec<&view::Contender>> =
         std::collections::HashMap::new();
     for c in contenders {
-        by_scenario
-            .entry((&c.coaster, &c.mode))
-            .or_default()
-            .push(c);
+        by_matchup.entry((&c.coaster, &c.mode)).or_default().push(c);
     }
-    let best = by_scenario
+    let best = by_matchup
         .values()
         .filter(|group| group.len() >= 2)
         .max_by_key(|group| group.len());
     match best {
-        // Groups are already score-sorted within a scenario by contenders().
+        // Groups are already score-sorted within a class by contenders().
         Some(group) => (group[0].id.clone(), group[1].id.clone()),
         None => {
             let id = |i: usize| contenders.get(i).map(|c| c.id.clone()).unwrap_or_default();
@@ -830,14 +908,15 @@ fn build_compare_page(
         .render()?,
     )?;
 
-    // A permalink page + card for every ordered same-scenario matchup, so a
-    // shared `compare-<a>.vs.<b>.html` unfurls with that exact pairing. The
-    // picker only allows same-scenario fights, so those are the only reachable
-    // deep links. Ordered (a left, b right) to match the URL and the swap.
-    let scenario = |c: &view::Contender| (c.coaster.clone(), c.mode.clone());
+    // A permalink page + card for every ordered same-class matchup (same
+    // coaster and mode), so a shared `compare-<a>.vs.<b>.html` unfurls with
+    // that exact pairing. The picker only allows same-class fights, so those
+    // are the only reachable deep links. Ordered (a left, b right) to match
+    // the URL and the swap.
+    let matchup_key = |c: &view::Contender| (c.coaster.clone(), c.mode.clone());
     for a in contenders {
         for b in contenders {
-            if a.id == b.id || scenario(a) != scenario(b) {
+            if a.id == b.id || matchup_key(a) != matchup_key(b) {
                 continue;
             }
             let slug = pair_slug(&a.id, &b.id);
@@ -871,6 +950,7 @@ fn facets(runs: &[EvalRun]) -> Vec<Facet> {
         collect("mode", runs.iter().map(|r| r.mode.clone()).collect()),
         collect("coaster", runs.iter().map(|r| r.ride_name()).collect()),
         collect("harness", runs.iter().map(|r| r.harness.clone()).collect()),
+        collect("parks", runs.iter().map(parks_label).collect()),
         collect(
             "model",
             runs.iter()
