@@ -98,6 +98,22 @@ Non-bundled binaries look for `data/` next to the exe. One-time setup:
   any OpenAI-compatible endpoint (e.g. `vllm serve`); `evals/ci/` has the
   CPU-only Dockerfile, a protocol-success gate (check_run.py), and the CI
   job shape.
+- Scenario generator: `eval --make-park out.park --seed N [--map-size
+  --hilliness --water --cash]` builds a deterministic park (same seed, same
+  bytes: seeded UtilRand/scenarioRand + pinned authoring timestamp) via the
+  game's MapGen on a blank state, loads wooden+twister ride objects and base
+  terrain by identifier (zero RCT2 assets), and writes an `out.hints.json`
+  sidecar (playable bounds, flattest dry square anchor, water fraction,
+  height span in z-units). Implementation: src/openrct2/rustbridge/ParkGen.cpp.
+- Multi-scenario runs: `driver.py --scenarios N` takes the first N seeds of
+  evals/scenarios/seeds.json (committed; parks regenerate on demand into the
+  gitignored evals/scenarios/generated/), renders each park's prompt map
+  line from its hints sidecar, and fans (model, scenario) pairs over a
+  thread pool (`--concurrency`). Layout nests as <model>/seed_N/round_R;
+  run.json records scenarios+seeds; standings.json aggregates per-park best
+  into mean/median (unscored parks count as zero). The site scores such runs
+  by the aggregate and shows per-round scenario badges + a parks facet.
+  Keep CI on ~3 seeds.
 - Head-to-head driver: `uv run evals/driver.py` (needs ANTHROPIC_API_KEY, or
   `--vertex` with GCP ADC; project defaults from $ANTHROPIC_VERTEX_PROJECT_ID);
   results under `evals/runs/<timestamp>/`. Models get a validate_track_program

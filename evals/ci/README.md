@@ -49,6 +49,18 @@ There is also a zero-GPU smoke: replay a canned program with no model at all —
 --ticks 25000 --program evals/programs/test_oval.json --out report.json`
 must produce `program.ok == true` and a tested ride.
 
+## Multi-scenario runs
+
+`--scenarios N` runs each model across the first N seeds of
+`evals/scenarios/seeds.json` concurrently and aggregates scores (per-park
+best, then mean/median across parks in `standings.json`). Parks are
+generated on demand by `openrct2-cli eval --make-park` — deterministic per
+seed (same seed, same bytes; the zero-GPU determinism smoke is generating a
+seed twice and comparing hashes) and fully assetless, so the mode composes
+with `--no-graphics`. Keep CI at a small count (e.g. `--scenarios 3`); the
+full 100-seed list is for real benchmark runs. `check_run.py` understands
+both the flat and the per-scenario round layouts.
+
 ## Field notes: what the first live runs caught (vLLM 0.25.1, A100)
 
 Findings from the eval's first day out, with honest attribution — kept here
