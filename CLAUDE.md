@@ -127,6 +127,17 @@ Non-bundled binaries look for `data/` next to the exe. One-time setup:
   `./rust/coaster-bench/target/release/coaster-bench --models claude-fable-5
   --rounds 4 --ride-type 51 --name my-run`. Port must be in the sandbox
   policy (default 8791).
+- coaster-bench multi-scenario: `--scenarios N` mirrors the driver — first N
+  seeds of evals/scenarios/seeds.json, parks regenerated on demand, one game
+  server per park. Parks run in waves of `--concurrency` (default 3); wave
+  slot i serves on port base+i, so the sandbox policy must allow
+  `concurrency` consecutive ports from --port, not one per scenario.
+  Contenders on one park stay sequential (single game thread). With
+  concurrency > 1 the timeout stray-agent sweep is skipped (it would kill
+  sibling sessions in the shared sandbox); stale agents are locked out by
+  lease eviction instead. Prompt map line renders from the park's hints
+  sidecar; layout/run.json/standings.json match the driver's multi shape.
+  `--no-graphics` runs the servers assetless (screenshot tool dropped).
 - Second coaster-bench lane: `--models opencode:openrouter/<author>/<model>`
   runs opencode in the `coaster-or` sandbox against OpenRouter (key in the
   login keychain as `openrouter-api-key`, cost tracked by spend delta).

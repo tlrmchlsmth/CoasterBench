@@ -12,6 +12,12 @@ pub fn ride_name(ride_type: u16) -> &'static str {
     }
 }
 
+/// The default map line, describing the asset-full default scenario
+/// (Build your own Six Flags Park). Generated parks pass their own line,
+/// rendered from the --make-park hints sidecar.
+pub const DEFAULT_MAP_LINE: &str = "flat grass around tile (60, 60); a lake sits roughly at tiles \
+    (68-85, 55-75) - do NOT build into it. Stay within tiles 20-120.";
+
 pub fn round_prompt(
     ride_type: u16,
     round: u32,
@@ -19,8 +25,10 @@ pub fn round_prompt(
     previous_feedback: Option<&str>,
     modalities: Modalities,
     budget_secs: u64,
+    map_line: Option<&str>,
 ) -> String {
     let name = ride_name(ride_type);
+    let map_line = map_line.unwrap_or(DEFAULT_MAP_LINE);
     let budget_mins = budget_secs / 60;
     // Models that can't take images get an MCP endpoint with screenshot
     // stripped, so the tool list must not advertise it either.
@@ -62,7 +70,7 @@ This is round {round} of {rounds}. You build interactively through the "coaster"
 - Intensity above ~10 tanks excitement; keep it under 10. Crashes disqualify.
 - {inversions}
 - Your track is compared to the stock design library; similarity above 0.5 scales your score toward zero. Design something original.
-- Map: flat grass around tile (60, 60); a lake sits roughly at tiles (68-85, 55-75) - do NOT build into it. Stay within tiles 20-120.
+- Map: {map_line}
 
 ## How to work
 1. Plan a layout, then new_ride and build with place_pieces in chunks.
@@ -91,7 +99,7 @@ mod tests {
 
     #[test]
     fn twister_prompt_mentions_inversions_allowed() {
-        let p = round_prompt(51, 1, 6, None, both(), 1800);
+        let p = round_prompt(51, 1, 6, None, both(), 1800, None);
         assert!(p.contains("ALLOWED"));
         assert!(p.contains("ride_type 51"));
         assert!(p.contains("round 1 of 6"));
@@ -99,26 +107,26 @@ mod tests {
 
     #[test]
     fn wooden_prompt_forbids_inversions() {
-        assert!(round_prompt(52, 2, 4, None, both(), 1800).contains("NOT support"));
+        assert!(round_prompt(52, 2, 4, None, both(), 1800, None).contains("NOT support"));
     }
 
     #[test]
     fn feedback_is_included_when_present() {
-        let p = round_prompt(51, 2, 6, Some("{\"excitement\": 5.0}"), both(), 1800);
+        let p = round_prompt(51, 2, 6, Some("{\"excitement\": 5.0}"), both(), 1800, None);
         assert!(p.contains("Previous round result"));
         assert!(p.contains("excitement"));
     }
 
     #[test]
     fn text_only_prompt_omits_the_screenshot_tool() {
-        let p = round_prompt(52, 1, 6, None, Modalities::TEXT, 1800);
+        let p = round_prompt(52, 1, 6, None, Modalities::TEXT, 1800, None);
         assert!(!p.contains("screenshot"));
         assert!(p.contains("demolish()"), "other tools still listed");
     }
 
     #[test]
     fn budget_is_stated_in_minutes() {
-        let p = round_prompt(51, 1, 6, None, both(), 1800);
+        let p = round_prompt(51, 1, 6, None, both(), 1800, None);
         assert!(p.contains("30 minutes"), "1800s -> 30 minutes");
         assert!(
             p.contains("best_result"),
