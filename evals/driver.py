@@ -582,18 +582,26 @@ class Contender:
 STATION_PIECES = {"begin_station", "middle_station", "end_station"}
 
 
-def render_schematic(trace: list[dict], out_path: Path) -> Path | None:
-    """Draws the placed track as a two-panel PNG (top-down + isometric) from
+def render_schematic(
+    trace: list[dict], out_path: Path, stalls: list[dict] | None = None
+) -> Path | None:
+    """Draws the placed layout as a two-panel PNG (top-down + isometric) from
     the report's cursor trace — no game assets involved. Stations are green,
-    chain lift red, everything else shaded by height; an open circuit gets a
-    dashed gap line from track end back to the start."""
-    if len(trace) < 2:
+    chain lift red, other track shaded by height, stalls purple squares with
+    a tick on the door side; an open circuit gets a dashed gap line from
+    track end back to the start. Stall-only plans (guest-services) render
+    with no track at all."""
+    stalls = stalls or []
+    if len(trace) < 2 and not stalls:
         return None
     from PIL import Image, ImageDraw
 
     pts = [(p["x"], p["y"], p["z"]) for p in trace]
-    zs = [z for _, _, z in pts]
+    zs = [z for _, _, z in pts] or [0]
     z0, z1 = min(zs), max(zs)
+    # Stalls sit at ground level; the door faces `dir` (0=-x, 1=+y, 2=+x, 3=-y).
+    stall_pts = [(s["x"], s["y"], z0) for s in stalls]
+    door = {0: (-1, 0), 1: (0, 1), 2: (1, 0), 3: (0, -1)}
 
     def color(i: int) -> tuple[int, int, int]:
         piece = trace[i]["piece"]
@@ -612,11 +620,13 @@ def render_schematic(trace: list[dict], out_path: Path) -> Path | None:
     img = Image.new("RGB", (size * 2, size), (250, 250, 248))
     draw = ImageDraw.Draw(img)
 
-    closed = pts[0][:2] == pts[-1][:2] and trace[0]["z"] == trace[-1]["z"]
+    closed = len(pts) >= 2 and pts[0][:2] == pts[-1][:2] and trace[0]["z"] == trace[-1]["z"]
     for panel, (name, proj) in enumerate(panels.items()):
         proj_pts = [proj(*p) for p in pts]
-        xs = [u for u, _ in proj_pts]
-        ys = [v for _, v in proj_pts]
+        proj_stalls = [proj(*p) for p in stall_pts]
+        all_pts = proj_pts + proj_stalls
+        xs = [u for u, _ in all_pts]
+        ys = [v for _, v in all_pts]
         span = max(max(xs) - min(xs), max(ys) - min(ys)) or 1.0
         scale = (size - 2 * margin) / span
 
@@ -629,18 +639,29 @@ def render_schematic(trace: list[dict], out_path: Path) -> Path | None:
         px = [to_px(p) for p in proj_pts]
         for i in range(1, len(px)):
             draw.line([px[i - 1], px[i]], fill=color(i), width=4)
-        if not closed:
-            draw.line([px[-1], px[0]], fill=(150, 150, 150), width=2)
-        sx, sy = px[0]
-        draw.ellipse([sx - 5, sy - 5, sx + 5, sy + 5], outline=(0, 0, 0), width=2)
+        if px:
+            if not closed:
+                draw.line([px[-1], px[0]], fill=(150, 150, 150), width=2)
+            sx, sy = px[0]
+            draw.ellipse([sx - 5, sy - 5, sx + 5, sy + 5], outline=(0, 0, 0), width=2)
+        for spec, uv in zip(stalls, proj_stalls):
+            cx, cy = to_px(uv)
+            r = 6
+            draw.rectangle([cx - r, cy - r, cx + r, cy + r], fill=(148, 87, 235))
+            ddx, ddy = door.get(int(spec.get("dir", 0)) & 3, (0, 0))
+            # The door tick uses the same projection as the panel, so it stays
+            # honest in the isometric view.
+            du, dv = proj(spec["x"] + ddx * 0.9, spec["y"] + ddy * 0.9, z0)
+            tx, ty = to_px((du, dv))
+            draw.line([cx, cy, tx, ty], fill=(148, 87, 235), width=3)
         draw.text((panel * size + margin, size - margin + 8), name, fill=(90, 90, 90))
 
-    if not closed:
+    if len(pts) >= 2 and not closed:
         dx = pts[0][0] - pts[-1][0]
         dy = pts[0][1] - pts[-1][1]
         dz = trace[0]["z"] - trace[-1]["z"]
         draw.text((margin, 8), f"OPEN CIRCUIT: gap to start  dx={dx}  dy={dy}  dz={dz}", fill=(180, 30, 30))
-    draw.text((size + margin, 8), "green=station  red=chain-lift  blue->orange=height", fill=(90, 90, 90))
+    draw.text((size + margin, 8), "green=station  red=chain-lift  blue->orange=height  purple=stall(door tick)", fill=(90, 90, 90))
     img.save(out_path)
     return out_path
 
@@ -674,10 +695,11 @@ def run_eval(
 
     report = json.loads(report_path.read_text())
     trace = (report.get("program") or {}).get("trace") or []
+    stalls = program.get("stalls") or []
     schematic = None
-    if trace:
+    if trace or stalls:
         try:
-            schematic = render_schematic(trace, workdir / "track.png")
+            schematic = render_schematic(trace, workdir / "track.png", stalls)
         except Exception as e:  # a diagram must never sink the round
             print(f"  schematic render failed: {e}", file=sys.stderr)
     shot = schematic if SCHEMATIC_FEEDBACK else None

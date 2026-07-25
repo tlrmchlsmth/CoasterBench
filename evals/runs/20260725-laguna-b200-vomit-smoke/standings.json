@@ -1,0 +1,26 @@
+{
+  "goal": "max-vomit",
+  "mode": "design",
+  "standings": [
+    {
+      "model": "poolside/Laguna-S-2.1",
+      "best_score": null,
+      "best_metrics": null,
+      "best_excitement": null,
+      "best_raw_excitement": null,
+      "best_similarity": null,
+      "attempts": [
+        {
+          "round": 1,
+          "summary": "BUILD FAILED at piece 55 (55/100 placed): piece 'left_turn_1' rejected at cursor (x=47, y=96, z=192, dir=0): ride type 51 has no artwork for this piece: it would build and rate but render as nothing (invisible track). valid_next_pieces lists what this ride can draw here",
+          "lookups": []
+        },
+        {
+          "round": 2,
+          "summary": "BUILD FAILED at piece 59 (59/102 placed): piece 'down_25' rejected at cursor (x=49, y=96, z=184, dir=1): Twister Roller Coaster 1 in the way",
+          "lookups": []
+        }
+      ]
+    }
+  ]
+}

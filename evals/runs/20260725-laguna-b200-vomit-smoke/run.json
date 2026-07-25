@@ -1,0 +1,16 @@
+{
+  "goal": "max-vomit",
+  "goal_config": {},
+  "mode": "design",
+  "harness": "driver-api",
+  "models": [
+    "poolside/Laguna-S-2.1"
+  ],
+  "rounds": 2,
+  "ticks": 25000,
+  "ride_type": 51,
+  "scenario": "BigMapTest.sv6",
+  "no_graphics": true,
+  "endpoint": "http://127.0.0.1:8010/v1",
+  "similarity_grace": 0.5
+}

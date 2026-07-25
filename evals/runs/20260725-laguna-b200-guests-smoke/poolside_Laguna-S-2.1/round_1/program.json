@@ -1,0 +1,11 @@
+{
+  "stalls": [
+    {
+      "stall_type": "information_kiosk",
+      "x": 40,
+      "y": 40,
+      "dir": 2,
+      "price": 1.0
+    }
+  ]
+}

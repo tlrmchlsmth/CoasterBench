@@ -1,0 +1,776 @@
+{
+  "program": {
+    "ok": false,
+    "ride_id": 100,
+    "pieces_placed": 55,
+    "pieces_total": 100,
+    "total_cost": 97640,
+    "error": {
+      "piece_index": 55,
+      "piece": "left_turn_1",
+      "message": "piece 'left_turn_1' rejected at cursor (x=47, y=96, z=192, dir=0): ride type 51 has no artwork for this piece: it would build and rate but render as nothing (invisible track). valid_next_pieces lists what this ride can draw here"
+    },
+    "end_cursor": {
+      "x": 47,
+      "y": 96,
+      "z": 192,
+      "dir": 0,
+      "bank": 0,
+      "slope": 0
+    },
+    "trace": [
+      {
+        "piece": "start",
+        "chain": false,
+        "x": 100,
+        "y": 100,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "begin_station",
+        "chain": false,
+        "x": 99,
+        "y": 100,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "middle_station",
+        "chain": false,
+        "x": 98,
+        "y": 100,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "end_station",
+        "chain": false,
+        "x": 97,
+        "y": 100,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 96,
+        "y": 100,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 95,
+        "y": 100,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 94,
+        "y": 100,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat_to_up_25",
+        "chain": false,
+        "x": 93,
+        "y": 100,
+        "z": 120,
+        "dir": 0
+      },
+      {
+        "piece": "up_25",
+        "chain": true,
+        "x": 92,
+        "y": 100,
+        "z": 136,
+        "dir": 0
+      },
+      {
+        "piece": "up_25",
+        "chain": true,
+        "x": 91,
+        "y": 100,
+        "z": 152,
+        "dir": 0
+      },
+      {
+        "piece": "up_25",
+        "chain": true,
+        "x": 90,
+        "y": 100,
+        "z": 168,
+        "dir": 0
+      },
+      {
+        "piece": "up_25",
+        "chain": true,
+        "x": 89,
+        "y": 100,
+        "z": 184,
+        "dir": 0
+      },
+      {
+        "piece": "up_25",
+        "chain": true,
+        "x": 88,
+        "y": 100,
+        "z": 200,
+        "dir": 0
+      },
+      {
+        "piece": "up_25_to_flat",
+        "chain": false,
+        "x": 87,
+        "y": 100,
+        "z": 208,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 86,
+        "y": 100,
+        "z": 208,
+        "dir": 0
+      },
+      {
+        "piece": "flat_to_left_bank",
+        "chain": false,
+        "x": 85,
+        "y": 100,
+        "z": 208,
+        "dir": 0
+      },
+      {
+        "piece": "left_helix_up_small",
+        "chain": false,
+        "x": 86,
+        "y": 97,
+        "z": 224,
+        "dir": 2
+      },
+      {
+        "piece": "left_helix_up_small",
+        "chain": false,
+        "x": 85,
+        "y": 100,
+        "z": 240,
+        "dir": 0
+      },
+      {
+        "piece": "left_bank_to_flat",
+        "chain": false,
+        "x": 84,
+        "y": 100,
+        "z": 240,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 83,
+        "y": 100,
+        "z": 240,
+        "dir": 0
+      },
+      {
+        "piece": "flat_to_up_60",
+        "chain": false,
+        "x": 82,
+        "y": 100,
+        "z": 264,
+        "dir": 0
+      },
+      {
+        "piece": "up_60",
+        "chain": false,
+        "x": 81,
+        "y": 100,
+        "z": 328,
+        "dir": 0
+      },
+      {
+        "piece": "up_60_to_flat",
+        "chain": false,
+        "x": 80,
+        "y": 100,
+        "z": 352,
+        "dir": 0
+      },
+      {
+        "piece": "flat_to_up_25",
+        "chain": false,
+        "x": 79,
+        "y": 100,
+        "z": 360,
+        "dir": 0
+      },
+      {
+        "piece": "left_vertical_loop",
+        "chain": false,
+        "x": 77,
+        "y": 99,
+        "z": 360,
+        "dir": 0
+      },
+      {
+        "piece": "down_25_to_flat",
+        "chain": false,
+        "x": 76,
+        "y": 99,
+        "z": 352,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 75,
+        "y": 99,
+        "z": 352,
+        "dir": 0
+      },
+      {
+        "piece": "flat_to_right_bank",
+        "chain": false,
+        "x": 74,
+        "y": 99,
+        "z": 352,
+        "dir": 0
+      },
+      {
+        "piece": "right_helix_down_small",
+        "chain": false,
+        "x": 75,
+        "y": 102,
+        "z": 336,
+        "dir": 2
+      },
+      {
+        "piece": "right_helix_down_small",
+        "chain": false,
+        "x": 74,
+        "y": 99,
+        "z": 320,
+        "dir": 0
+      },
+      {
+        "piece": "right_bank_to_flat",
+        "chain": false,
+        "x": 73,
+        "y": 99,
+        "z": 320,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 72,
+        "y": 99,
+        "z": 320,
+        "dir": 0
+      },
+      {
+        "piece": "flat_to_left_bank",
+        "chain": false,
+        "x": 71,
+        "y": 99,
+        "z": 320,
+        "dir": 0
+      },
+      {
+        "piece": "left_helix_down_small",
+        "chain": false,
+        "x": 72,
+        "y": 96,
+        "z": 304,
+        "dir": 2
+      },
+      {
+        "piece": "left_helix_down_small",
+        "chain": false,
+        "x": 71,
+        "y": 99,
+        "z": 288,
+        "dir": 0
+      },
+      {
+        "piece": "left_bank_to_flat",
+        "chain": false,
+        "x": 70,
+        "y": 99,
+        "z": 288,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 69,
+        "y": 99,
+        "z": 288,
+        "dir": 0
+      },
+      {
+        "piece": "flat_to_up_25",
+        "chain": false,
+        "x": 68,
+        "y": 99,
+        "z": 296,
+        "dir": 0
+      },
+      {
+        "piece": "up_25_to_flat",
+        "chain": false,
+        "x": 67,
+        "y": 99,
+        "z": 304,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 66,
+        "y": 99,
+        "z": 304,
+        "dir": 0
+      },
+      {
+        "piece": "flat_to_right_bank",
+        "chain": false,
+        "x": 65,
+        "y": 99,
+        "z": 304,
+        "dir": 0
+      },
+      {
+        "piece": "right_helix_up_small",
+        "chain": false,
+        "x": 66,
+        "y": 102,
+        "z": 320,
+        "dir": 2
+      },
+      {
+        "piece": "right_helix_up_small",
+        "chain": false,
+        "x": 65,
+        "y": 99,
+        "z": 336,
+        "dir": 0
+      },
+      {
+        "piece": "right_bank_to_flat",
+        "chain": false,
+        "x": 64,
+        "y": 99,
+        "z": 336,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 63,
+        "y": 99,
+        "z": 336,
+        "dir": 0
+      },
+      {
+        "piece": "flat_to_down_60",
+        "chain": false,
+        "x": 62,
+        "y": 99,
+        "z": 312,
+        "dir": 0
+      },
+      {
+        "piece": "down_60",
+        "chain": false,
+        "x": 61,
+        "y": 99,
+        "z": 248,
+        "dir": 0
+      },
+      {
+        "piece": "down_60_to_flat",
+        "chain": false,
+        "x": 60,
+        "y": 99,
+        "z": 224,
+        "dir": 0
+      },
+      {
+        "piece": "flat_to_down_25",
+        "chain": false,
+        "x": 59,
+        "y": 99,
+        "z": 216,
+        "dir": 0
+      },
+      {
+        "piece": "down_25",
+        "chain": false,
+        "x": 58,
+        "y": 99,
+        "z": 200,
+        "dir": 0
+      },
+      {
+        "piece": "down_25_to_flat",
+        "chain": false,
+        "x": 57,
+        "y": 99,
+        "z": 192,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 56,
+        "y": 99,
+        "z": 192,
+        "dir": 0
+      },
+      {
+        "piece": "s_bend_left",
+        "chain": false,
+        "x": 53,
+        "y": 98,
+        "z": 192,
+        "dir": 0
+      },
+      {
+        "piece": "s_bend_right",
+        "chain": false,
+        "x": 50,
+        "y": 99,
+        "z": 192,
+        "dir": 0
+      },
+      {
+        "piece": "left_turn_3",
+        "chain": false,
+        "x": 49,
+        "y": 97,
+        "z": 192,
+        "dir": 3
+      },
+      {
+        "piece": "right_turn_3",
+        "chain": false,
+        "x": 47,
+        "y": 96,
+        "z": 192,
+        "dir": 0
+      }
+    ]
+  },
+  "bounds": {
+    "min_tile_x": 48,
+    "min_tile_y": 96,
+    "max_tile_x": 254,
+    "max_tile_y": 254,
+    "min_z": 112,
+    "max_z": 1136
+  },
+  "rides": [
+    {
+      "id": 100,
+      "ride_type": 51,
+      "status": "closed",
+      "tested": false,
+      "crashed": false,
+      "excitement": null,
+      "intensity": null,
+      "nausea": null,
+      "max_speed": 0,
+      "average_speed": 0,
+      "ride_length": 0,
+      "max_positive_g": 0.0,
+      "max_negative_g": 0.0,
+      "max_lateral_g": 0.0,
+      "total_air_time": 0,
+      "num_drops": 0,
+      "highest_drop": 0,
+      "num_inversions": 0
+    }
+  ],
+  "park": {
+    "park_rating": 999,
+    "park_rating_start": 999,
+    "park_rating_delta": 0,
+    "guests_count": 2013,
+    "vomit_count": 24,
+    "vomit_delta": 18,
+    "vomit_events": 123,
+    "stall_profit": null,
+    "stalls": [
+      {
+        "id": 71,
+        "ride_type": 35,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -257.6,
+        "total_customers": 315
+      },
+      {
+        "id": 72,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -12.9,
+        "total_customers": 43
+      },
+      {
+        "id": 73,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -28.5,
+        "total_customers": 57
+      },
+      {
+        "id": 74,
+        "ride_type": 32,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -9.3,
+        "total_customers": 31
+      },
+      {
+        "id": 75,
+        "ride_type": 48,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 3
+      },
+      {
+        "id": 76,
+        "ride_type": 30,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -23.4,
+        "total_customers": 78
+      },
+      {
+        "id": 77,
+        "ride_type": 48,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 0
+      },
+      {
+        "id": 78,
+        "ride_type": 32,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -73.5,
+        "total_customers": 245
+      },
+      {
+        "id": 79,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -44.9,
+        "total_customers": 92
+      },
+      {
+        "id": 80,
+        "ride_type": 35,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -291.9,
+        "total_customers": 278
+      },
+      {
+        "id": 81,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -49.0,
+        "total_customers": 98
+      },
+      {
+        "id": 82,
+        "ride_type": 36,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 151
+      },
+      {
+        "id": 83,
+        "ride_type": 36,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 47
+      },
+      {
+        "id": 84,
+        "ride_type": 36,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 114
+      },
+      {
+        "id": 85,
+        "ride_type": 36,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 48
+      },
+      {
+        "id": 86,
+        "ride_type": 45,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 0
+      },
+      {
+        "id": 87,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -47.0,
+        "total_customers": 94
+      },
+      {
+        "id": 88,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -3.5,
+        "total_customers": 7
+      },
+      {
+        "id": 89,
+        "ride_type": 30,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -1.2,
+        "total_customers": 4
+      },
+      {
+        "id": 90,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -1.0,
+        "total_customers": 2
+      },
+      {
+        "id": 91,
+        "ride_type": 32,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -1.2,
+        "total_customers": 4
+      },
+      {
+        "id": 92,
+        "ride_type": 36,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 4
+      },
+      {
+        "id": 93,
+        "ride_type": 48,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 13
+      },
+      {
+        "id": 94,
+        "ride_type": 48,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 2
+      },
+      {
+        "id": 95,
+        "ride_type": 48,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 32
+      },
+      {
+        "id": 96,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -84.5,
+        "total_customers": 169
+      },
+      {
+        "id": 97,
+        "ride_type": 30,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -43.8,
+        "total_customers": 146
+      },
+      {
+        "id": 98,
+        "ride_type": 35,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -775.1,
+        "total_customers": 759
+      },
+      {
+        "id": 99,
+        "ride_type": 36,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 105
+      }
+    ]
+  },
+  "similarity": null
+}
