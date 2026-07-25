@@ -110,10 +110,11 @@ document.querySelectorAll('[data-trace-filter]').forEach(function (btn) {
   var selects = { a: root.querySelector('[data-side="a"]'), b: root.querySelector('[data-side="b"]') };
   var result = document.getElementById('vs-result');
 
-  // Only same-scenario contenders may fight: comparing library vs design, or
+  // Only same-class contenders may fight: comparing library vs design, or
   // wooden vs twister, is apples to oranges (different tasks, different rating
-  // scales). A scenario is the coaster and the mode together.
-  var scenarioOf = function (c) { return c.coaster + ' · ' + c.mode; };
+  // scales). A class is the coaster and the mode together (not a scenario
+  // park; multi-scenario runs still compare by coaster and mode).
+  var classOf = function (c) { return c.coaster + ' · ' + c.mode; };
 
   function option(c) {
     var o = document.createElement('option');
@@ -123,27 +124,27 @@ document.querySelectorAll('[data-trace-filter]').forEach(function (btn) {
     return o;
   }
 
-  // Side A picks from everything, grouped by scenario.
+  // Side A picks from everything, grouped by class.
   function fillAnchor() {
     var groups = {};
-    data.forEach(function (c) { (groups[scenarioOf(c)] = groups[scenarioOf(c)] || []).push(c); });
-    Object.keys(groups).sort().forEach(function (scenario) {
+    data.forEach(function (c) { (groups[classOf(c)] = groups[classOf(c)] || []).push(c); });
+    Object.keys(groups).sort().forEach(function (klass) {
       var og = document.createElement('optgroup');
-      og.label = scenario;
-      groups[scenario].forEach(function (c) { og.appendChild(option(c)); });
+      og.label = klass;
+      groups[klass].forEach(function (c) { og.appendChild(option(c)); });
       selects.a.appendChild(og);
     });
   }
 
-  // Side B is constrained to A's scenario, so a mismatch can't be selected.
-  // Keeps B's current pick when it is still in-scenario, else picks the best
+  // Side B is constrained to A's class, so a mismatch can't be selected.
+  // Keeps B's current pick when it is still in-class, else picks the best
   // opponent that is not A itself.
   function fillOpponents() {
     var anchor = byId[selects.a.value];
     var want = selects.b.value;
     selects.b.innerHTML = '';
     var pool = data.filter(function (c) {
-      return anchor && scenarioOf(c) === scenarioOf(anchor);
+      return anchor && classOf(c) === classOf(anchor);
     });
     pool.forEach(function (c) { selects.b.appendChild(option(c)); });
     var keep = pool.some(function (c) { return c.id === want && c.id !== selects.a.value; });
@@ -271,7 +272,7 @@ document.querySelectorAll('[data-trace-filter]').forEach(function (btn) {
     history.replaceState(null, '', permalink(a.id, b.id));
   }
 
-  // Reflect A's pick, refill B to A's scenario, then render.
+  // Reflect A's pick, refill B to A's class, then render.
   function update() { fillOpponents(); render(); }
 
   var params = new URLSearchParams(window.location.search);
@@ -279,9 +280,9 @@ document.querySelectorAll('[data-trace-filter]').forEach(function (btn) {
   var wantB = params.get('b') || root.dataset.defaultB;
   if (byId[wantA]) selects.a.value = wantA;
   fillOpponents();
-  // Honour B's deep-link only when it shares A's scenario; otherwise
-  // fillOpponents already left B on the best in-scenario opponent.
-  if (byId[wantB] && scenarioOf(byId[wantB]) === scenarioOf(byId[selects.a.value])
+  // Honour B's deep-link only when it shares A's class; otherwise
+  // fillOpponents already left B on the best in-class opponent.
+  if (byId[wantB] && classOf(byId[wantB]) === classOf(byId[selects.a.value])
       && wantB !== selects.a.value) {
     selects.b.value = wantB;
   }
@@ -289,7 +290,7 @@ document.querySelectorAll('[data-trace-filter]').forEach(function (btn) {
   selects.a.addEventListener('change', update);
   selects.b.addEventListener('change', render);
   document.getElementById('vs-swap').addEventListener('click', function () {
-    // Both sides share a scenario, so a straight swap stays valid.
+    // Both sides share a class, so a straight swap stays valid.
     var tmp = selects.a.value; selects.a.value = selects.b.value;
     fillOpponents();
     selects.b.value = tmp;

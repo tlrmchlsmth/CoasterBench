@@ -23,6 +23,7 @@ evals/runs/**/*.webm
 # is already ignored globally, this covers the matching stderr stream).
 evals/runs/**/session.err
 evals/library-previews/
+evals/scenarios/generated/
 .wrangler/
 .claude/settings.local.json
 .claude/worktrees/

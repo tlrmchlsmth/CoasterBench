@@ -53,7 +53,7 @@ flowchart LR
       {%- for row in rows %}
         <tr class="{% if row.is_winner %}winner{% endif %}"
             data-run="{{ row.run_name }}" data-mode="{{ row.mode }}" data-coaster="{{ row.coaster }}"
-            data-harness="{{ row.harness }}" data-model="{{ row.model }}"
+            data-harness="{{ row.harness }}" data-parks="{{ row.parks }}" data-model="{{ row.model }}"
             data-score="{{ row.sort_score }}" data-intensity="{{ row.sort_intensity }}"
             data-nausea="{{ row.sort_nausea }}">
           <td>
@@ -65,7 +65,7 @@ flowchart LR
           {%- endmatch %}
           </td>
           <td class="run-cell"><a href="{{ row.run_href }}">{{ row.run_name }}</a><span class="dim">{{ row.date }}</span></td>
-          <td class="dim setup">{{ row.mode }} &middot; {{ row.coaster }} &middot; {{ row.harness }}</td>
+          <td class="dim setup">{{ row.mode }} &middot; {{ row.coaster }} &middot; {{ row.harness }}{% if row.parks != "single" %} &middot; {{ row.parks }}{% endif %}</td>
           <td class="model"><span class="medal dim">{{ row.place }}</span> <a href="{{ row.model_href }}">{{ row.model }}</a></td>
           {%- match row.score %}
           {%- when Some(score) %}

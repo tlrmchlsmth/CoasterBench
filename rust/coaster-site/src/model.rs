@@ -46,6 +46,11 @@ struct RunMeta {
     #[serde(default)]
     models: Vec<String>,
     rounds: Option<u32>,
+    /// Multi-scenario runs (driver --scenarios): the generated parks each
+    /// model competed on, e.g. ["seed_1", "seed_2"]. Empty for single-park
+    /// runs.
+    #[serde(default)]
+    scenarios: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -135,6 +140,9 @@ pub struct LibraryDesign {
 #[derive(Debug)]
 pub struct Round {
     pub number: u32,
+    /// Which generated park this round played on (multi-scenario runs nest
+    /// rounds as `<model>/<scenario>/round_N`); None for single-park runs.
+    pub scenario: Option<String>,
     /// The rated ride of the round, when the test circuit completed.
     pub ride: Option<Ride>,
     pub similarity: Option<Similarity>,
@@ -250,6 +258,36 @@ impl ModelRun {
             .max_by(|a, b| a.excitement().total_cmp(&b.excitement()))
     }
 
+    /// The best rated round on one scenario park.
+    pub fn best_in(&self, scenario: &str) -> Option<&Round> {
+        self.rounds
+            .iter()
+            .filter(|r| r.scenario.as_deref() == Some(scenario) && r.excitement() > 0.0)
+            .max_by(|a, b| a.excitement().total_cmp(&b.excitement()))
+    }
+
+    /// Aggregate score across scenario parks: the mean of each park's best
+    /// excitement, counting a park with no rated coaster as zero — the
+    /// aggregate measures reliability across parks, not just the good ones.
+    pub fn aggregate_score(&self, scenarios: &[String]) -> f64 {
+        if scenarios.is_empty() {
+            return self.best().map_or(0.0, |r| r.excitement());
+        }
+        let total: f64 = scenarios
+            .iter()
+            .map(|s| self.best_in(s).map_or(0.0, |r| r.excitement()))
+            .sum();
+        total / scenarios.len() as f64
+    }
+
+    /// How many scenario parks got at least one rated coaster.
+    pub fn scenarios_scored(&self, scenarios: &[String]) -> usize {
+        scenarios
+            .iter()
+            .filter(|s| self.best_in(s).is_some())
+            .count()
+    }
+
     pub fn usage_totals(&self) -> UsageTotals {
         let mut totals = UsageTotals::default();
         for usage in self.rounds.iter().filter_map(|r| r.usage.as_ref()) {
@@ -284,6 +322,9 @@ pub struct EvalRun {
     pub models: Vec<ModelRun>,
     pub ride_type: i64,
     pub harness: String,
+    /// Multi-scenario runs: the generated parks every model competed on, in
+    /// run.json order. Empty for classic single-park runs.
+    pub scenarios: Vec<String>,
     /// Models and round count run.json promised, when it recorded them.
     expected_models: Vec<String>,
     expected_rounds: Option<u32>,
@@ -346,16 +387,29 @@ impl EvalRun {
         }
     }
 
-    /// Rounds each model was expected to run: run.json's promise, or the run's
-    /// own longest model when it predates that field.
+    /// Rounds each model was expected to run: run.json's promise (times the
+    /// scenario count on multi-scenario runs, where `rounds` is per park), or
+    /// the run's own longest model when it predates that field.
     pub fn expected_round_count(&self) -> u32 {
-        self.expected_rounds.unwrap_or_else(|| {
-            self.models
-                .iter()
-                .map(|m| m.rounds.len() as u32)
-                .max()
-                .unwrap_or(0)
-        })
+        self.expected_rounds
+            .map(|r| r * self.scenarios.len().max(1) as u32)
+            .unwrap_or_else(|| {
+                self.models
+                    .iter()
+                    .map(|m| m.rounds.len() as u32)
+                    .max()
+                    .unwrap_or(0)
+            })
+    }
+
+    /// A model's headline score: best excitement on single-park runs, the
+    /// across-parks aggregate on multi-scenario runs.
+    pub fn score_of(&self, model: &ModelRun) -> f64 {
+        if self.scenarios.is_empty() {
+            model.best().map_or(0.0, |r| r.excitement())
+        } else {
+            model.aggregate_score(&self.scenarios)
+        }
     }
 
     /// True when this model ran its full expected round count. Unlike
@@ -369,10 +423,7 @@ impl EvalRun {
     /// Models best-first, so index one is the winner.
     pub fn ranked(&self) -> Vec<&ModelRun> {
         let mut models: Vec<&ModelRun> = self.models.iter().collect();
-        models.sort_by(|a, b| {
-            let score = |m: &ModelRun| m.best().map_or(0.0, |r| r.excitement());
-            score(b).total_cmp(&score(a))
-        });
+        models.sort_by(|a, b| self.score_of(b).total_cmp(&self.score_of(a)));
         models
     }
 }
@@ -431,6 +482,7 @@ fn load_round(
     run_dir: &Path,
     store: &ArtStore,
     grace: f64,
+    scenario: Option<&str>,
 ) -> Result<Option<Round>> {
     let report_path = round_dir.join("report.json");
     if !report_path.is_file() {
@@ -466,6 +518,7 @@ fn load_round(
 
     Ok(Some(Round {
         number,
+        scenario: scenario.map(str::to_string),
         ride: report.rides.into_iter().find(|r| r.excitement.is_some()),
         similarity: report.similarity,
         build_error: build_error(report.program.as_ref()),
@@ -494,37 +547,66 @@ pub fn load_runs(runs_dir: &Path, store: &ArtStore) -> Result<Vec<EvalRun>> {
         let meta: RunMeta = read_json_opt(&run_dir.join("run.json"))?.unwrap_or_default();
         let grace = meta.similarity_grace.unwrap_or(DEFAULT_SIMILARITY_GRACE);
 
+        let dir_name = |path: &Path| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string()
+        };
         let mut models = Vec::new();
+        let mut seen_scenarios: Vec<String> = Vec::new();
         for model_dir in sorted_entries(&run_dir)? {
             if !model_dir.is_dir() {
                 continue;
             }
             let mut rounds = Vec::new();
-            for round_dir in sorted_entries(&model_dir)? {
-                let is_round = round_dir
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("round_"));
-                if !round_dir.is_dir() || !is_round {
+            for entry in sorted_entries(&model_dir)? {
+                if !entry.is_dir() {
                     continue;
                 }
-                if let Some(round) = load_round(&round_dir, &run_dir, store, grace)? {
-                    rounds.push(round);
+                let name = dir_name(&entry);
+                if name.starts_with("round_") {
+                    if let Some(round) = load_round(&entry, &run_dir, store, grace, None)? {
+                        rounds.push(round);
+                    }
+                } else {
+                    // Multi-scenario layout: <model>/<scenario>/round_N.
+                    for round_dir in sorted_entries(&entry)? {
+                        let is_round =
+                            round_dir.is_dir() && dir_name(&round_dir).starts_with("round_");
+                        if !is_round {
+                            continue;
+                        }
+                        if let Some(round) =
+                            load_round(&round_dir, &run_dir, store, grace, Some(&name))?
+                        {
+                            if !seen_scenarios.contains(&name) {
+                                seen_scenarios.push(name.clone());
+                            }
+                            rounds.push(round);
+                        }
+                    }
                 }
             }
-            rounds.sort_by_key(|r| r.number);
+            rounds.sort_by(|a, b| (&a.scenario, a.number).cmp(&(&b.scenario, b.number)));
             if !rounds.is_empty() {
-                let model = model_dir
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or_default()
-                    .to_string();
-                models.push(ModelRun { model, rounds });
+                models.push(ModelRun {
+                    model: dir_name(&model_dir),
+                    rounds,
+                });
             }
         }
         if models.is_empty() {
             continue;
         }
+        // run.json's list is authoritative (it includes parks nobody scored
+        // on); the directory scan covers harnesses that nest rounds without
+        // recording the field.
+        let scenarios = if meta.scenarios.is_empty() {
+            seen_scenarios
+        } else {
+            meta.scenarios.clone()
+        };
         runs.push(EvalRun {
             name: run_dir
                 .file_name()
@@ -536,6 +618,7 @@ pub fn load_runs(runs_dir: &Path, store: &ArtStore) -> Result<Vec<EvalRun>> {
             models,
             ride_type: meta.ride_type.unwrap_or(52),
             harness: meta.harness.unwrap_or_else(|| "driver-api".to_string()),
+            scenarios,
             expected_models: meta.models,
             expected_rounds: meta.rounds,
         });
@@ -602,6 +685,7 @@ mod tests {
     fn round(number: u32, excitement: f64) -> Round {
         Round {
             number,
+            scenario: None,
             ride: Some(Ride {
                 excitement: Some(excitement),
                 intensity: Some(6.0),
@@ -639,6 +723,7 @@ mod tests {
                 .collect(),
             ride_type: 52,
             harness: "test".to_string(),
+            scenarios: Vec::new(),
             expected_models: expected.iter().map(|m| m.to_string()).collect(),
             expected_rounds: rounds,
         }
@@ -685,5 +770,45 @@ mod tests {
         let run = run(vec![("a", 1), ("b", 1)], &[], None);
         assert_eq!(run.ranked()[0].model, "a");
         assert_eq!(run.date(), "2026-01-01");
+    }
+
+    fn scenario_round(scenario: &str, number: u32, excitement: f64) -> Round {
+        let mut r = round(number, excitement);
+        r.scenario = Some(scenario.to_string());
+        r
+    }
+
+    #[test]
+    fn multi_scenario_aggregates_mean_of_per_park_bests() {
+        let scenarios = vec![
+            "seed_1".to_string(),
+            "seed_2".to_string(),
+            "seed_3".to_string(),
+        ];
+        let model = ModelRun {
+            model: "a".to_string(),
+            rounds: vec![
+                scenario_round("seed_1", 1, 4.0),
+                scenario_round("seed_1", 2, 6.0),
+                scenario_round("seed_2", 1, 3.0),
+                // seed_3 never scored: counts as zero in the aggregate.
+            ],
+        };
+        assert_eq!(model.best_in("seed_1").unwrap().excitement(), 6.0);
+        assert_eq!(model.aggregate_score(&scenarios), 3.0);
+        assert_eq!(model.scenarios_scored(&scenarios), 2);
+    }
+
+    #[test]
+    fn multi_scenario_expected_rounds_multiply_by_park_count() {
+        let mut multi = run(vec![("a", 6)], &["a"], Some(2));
+        multi.scenarios = vec![
+            "seed_1".to_string(),
+            "seed_2".to_string(),
+            "seed_3".to_string(),
+        ];
+        // 2 rounds per park x 3 parks; the model's 6 flat rounds satisfy it.
+        assert_eq!(multi.expected_round_count(), 6);
+        assert_eq!(multi.incomplete_reason(), None);
     }
 }

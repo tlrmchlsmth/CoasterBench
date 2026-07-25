@@ -78,6 +78,9 @@ using namespace OpenRCT2;
 
 namespace OpenRCT2
 {
+    // fork: deterministic authoring date for generated parks (--make-park)
+    uint64_t gParkFileAuthoringTimeOverride = 0;
+
     enum class ParkFileChunkType : uint32_t
     {
         // clang-format off
@@ -294,9 +297,11 @@ namespace OpenRCT2
                     cs.write(std::string_view(gVersionInfoFull));
                     std::vector<std::string> authors;
                     cs.readWriteVector(authors, [](std::string& s) {});
-                    cs.write(std::string_view());                  // custom notes that can be attached to the save
-                    cs.write(static_cast<uint64_t>(std::time(0))); // date started
-                    cs.write(static_cast<uint64_t>(std::time(0))); // date modified
+                    cs.write(std::string_view()); // custom notes that can be attached to the save
+                    const auto authoringTime = gParkFileAuthoringTimeOverride != 0 ? gParkFileAuthoringTimeOverride
+                                                                                   : static_cast<uint64_t>(std::time(0));
+                    cs.write(authoringTime); // date started
+                    cs.write(authoringTime); // date modified
                 });
             }
         }

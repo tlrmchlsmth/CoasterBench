@@ -20,7 +20,12 @@ def main() -> int:
     run = json.loads((run_dir / "run.json").read_text())
     failures = []
     for model in run["models"]:
-        reports = sorted(run_dir.glob(f"{model.replace('/', '_')}/round_*/report.json"))
+        model_dir = model.replace("/", "_")
+        # Single-scenario runs put rounds directly under the model dir;
+        # multi-scenario runs (--scenarios) nest them per scenario park.
+        reports = sorted(run_dir.glob(f"{model_dir}/round_*/report.json")) + sorted(
+            run_dir.glob(f"{model_dir}/seed_*/round_*/report.json")
+        )
         tested = []
         for path in reports:
             report = json.loads(path.read_text())

@@ -37,6 +37,10 @@ namespace OpenRCT2
 
     struct IStream;
 
+    // fork: when non-zero, written as the authoring date instead of the wall
+    // clock so generated parks are byte-identical per seed (--make-park).
+    extern uint64_t gParkFileAuthoringTimeOverride;
+
     // As uint16_t, in order to allow comparison with int32_t
     constexpr uint16_t kInversionsHolesShelteredEightsSplit = 6;
     constexpr uint16_t kLogFlumeSteepSlopeVersion = 16;

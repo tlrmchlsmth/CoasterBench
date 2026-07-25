@@ -44,10 +44,12 @@ import base64
 import json
 import os
 import re
+import statistics
 import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -62,6 +64,10 @@ RCT2_DATA = Path.home() / "rct2-assets"
 # Assetless default: a checked-in upstream test park (large, mostly-open flat
 # grass, cash-rich) that loads and builds with only the bundled JSON objects.
 CI_SCENARIO = REPO / "test" / "tests" / "testdata" / "parks" / "BigMapTest.sv6"
+# Multi-scenario runs: committed seed list; parks regenerate deterministically
+# per seed (same seed, same bytes) into a gitignored cache.
+SEEDS_FILE = REPO / "evals" / "scenarios" / "seeds.json"
+GENERATED_DIR = REPO / "evals" / "scenarios" / "generated"
 
 MAP_LINES = {
     DEFAULT_SCENARIO.name: (
@@ -149,14 +155,57 @@ def ride_type_info(ride_type: int) -> tuple[str, str]:
     return name, line + " This is the required type for this competition."
 
 
-def build_system_prompt(ride_type: int, scenario: Path) -> str:
-    _, ride_line = ride_type_info(ride_type)
-    map_line = MAP_LINES.get(
+DIRECTIONS_LINE = "Directions: dir 0 faces -x, dir 1 faces +y, dir 2 faces +x, dir 3 faces -y."
+
+
+def map_line_from_hints(hints: dict) -> str:
+    """Renders the generator's machine hints sidecar into the prompt map line."""
+    size = hints["map_size"]
+    playable = hints["playable"]
+    start = hints["start"]
+    square = start.get("open_square", 0)
+    anchor = f"around tile ({start['x']}, {start['y']})"
+    if square:
+        anchor = f"a {square}x{square}-tile dry square centred on tile ({start['x']}, {start['y']})"
+    parts = [
+        f"Generated park, {size}x{size} tiles (playable {playable['min']}-{playable['max']} on both axes).",
+        f"The most open ground is {anchor} — anchor your station there and grow the layout outward, "
+        "using validation errors to feel out the terrain.",
+    ]
+    hilliness = hints.get("hilliness", 0)
+    if hilliness == 0:
+        parts.append("The terrain is entirely flat.")
+    else:
+        surface = hints.get("surface_z", {})
+        roughness = "gently rolling" if hilliness <= 3 else "hilly" if hilliness <= 6 else "mountainous"
+        parts.append(
+            f"Terrain is {roughness}: surface heights span {surface.get('min')}-{surface.get('max')} z-units "
+            "(one up_25 piece climbs 16 z-units), so expect placement errors on slopes and re-route around them."
+        )
+    water = hints.get("water_fraction", 0.0)
+    if water > 0.01:
+        parts.append(
+            f"About {round(water * 100)}% of the map is under water; you cannot build below the waterline, "
+            "and placement errors will say when water is in the way."
+        )
+    parts.append(DIRECTIONS_LINE)
+    return " ".join(parts)
+
+
+def scenario_map_line(scenario: Path) -> str:
+    hints_path = scenario.with_suffix(".hints.json")
+    if hints_path.exists():
+        return map_line_from_hints(json.loads(hints_path.read_text()))
+    return MAP_LINES.get(
         scenario.name,
         "Terrain unknown; flat grass around tile (60, 60) is a reasonable first bet. Use validation "
-        "errors to find open ground. Directions: dir 0 faces -x, dir 1 faces +y, dir 2 faces +x, dir 3 faces -y.",
+        f"errors to find open ground. {DIRECTIONS_LINE}",
     )
-    return SYSTEM_PROMPT.replace("{RIDE_TYPE_LINE}", ride_line).replace("{MAP_LINE}", map_line)
+
+
+def build_system_prompt(ride_type: int, scenario: Path) -> str:
+    _, ride_line = ride_type_info(ride_type)
+    return SYSTEM_PROMPT.replace("{RIDE_TYPE_LINE}", ride_line).replace("{MAP_LINE}", scenario_map_line(scenario))
 
 
 SYSTEM_PROMPT = f"""You are competing to design the best RollerCoaster Tycoon 2 roller coaster.
@@ -506,6 +555,31 @@ def validate_program(program: dict, scenario: Path) -> str:
     return json.dumps(result)
 
 
+def ensure_generated_park(seed: int) -> Path:
+    """Generates (or reuses) the deterministic park for a seed.
+
+    Same seed always gives the same bytes, so the gitignored cache never goes
+    stale; --make-park needs no RCT2 assets regardless of the run's mode.
+    """
+    park = GENERATED_DIR / f"seed_{seed}.park"
+    hints = park.with_suffix(".hints.json")
+    if park.exists() and hints.exists():
+        return park
+    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    cmd = [str(CLI), "eval", "--make-park", str(park), "--seed", str(seed)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if not park.exists() or not hints.exists():
+        raise RuntimeError(f"park generation failed for seed {seed}: {proc.stderr[-500:]}")
+    return park
+
+
+def load_seeds(count: int) -> list[int]:
+    seeds = json.loads(SEEDS_FILE.read_text())["seeds"]
+    if count > len(seeds):
+        raise SystemExit(f"error: --scenarios {count} but {SEEDS_FILE} only lists {len(seeds)} seeds")
+    return seeds[:count]
+
+
 def dump_library(scenario: Path, run_dir: Path) -> list[dict]:
     """Exports the stock design library via the CLI (library mode only)."""
     out = run_dir / "library.json"
@@ -819,8 +893,14 @@ def compete(
     ride_type: int,
     library: list[dict] | None = None,
     max_tokens: int = 8000,
+    scenario_label: str | None = None,
 ) -> Contender:
     contender = Contender(model=model)
+    # Multi-scenario runs nest each scenario's rounds under the model dir and
+    # tag log lines so concurrent competes stay readable.
+    model_dir = run_dir / model.replace("/", "_")
+    rounds_base = model_dir / scenario_label if scenario_label else model_dir
+    tag = f"{model} @ {scenario_label}" if scenario_label else model
     ride_name, _ = ride_type_info(ride_type)
     system_prompt = build_system_prompt(ride_type, scenario) + (LIBRARY_PROMPT if library is not None else "")
     tools = [TOOL, VALIDATE_TOOL] + (LIBRARY_TOOLS if library is not None else [])
@@ -861,9 +941,9 @@ def compete(
                 break
             if tool_use.name == "validate_track_program":
                 result = validate_program(tool_use.input, scenario)
-                print(f"  [{model}] round {rnd}: validate -> {result[:120]}", flush=True)
+                print(f"  [{tag}] round {rnd}: validate -> {result[:120]}", flush=True)
             else:
-                print(f"  [{model}] round {rnd}: {tool_use.name}({json.dumps(tool_use.input)})", flush=True)
+                print(f"  [{tag}] round {rnd}: {tool_use.name}({json.dumps(tool_use.input)})", flush=True)
                 result, lookup = library_tool_result(tool_use.name, tool_use.input, library or [])
                 lookups.append(lookup)
             if step + 1 >= MAX_LOOKUPS_PER_ROUND:
@@ -886,13 +966,13 @@ def compete(
             raise RuntimeError(f"{model} never submitted a program in round {rnd}")
         if program.get("ride_type") != ride_type:
             print(
-                f"  [{model}] round {rnd}: submitted ride_type {program.get('ride_type')}, forcing {ride_type}",
+                f"  [{tag}] round {rnd}: submitted ride_type {program.get('ride_type')}, forcing {ride_type}",
                 flush=True,
             )
             program["ride_type"] = ride_type
-        print(f"  [{model}] round {rnd}: {len(program.get('pieces', []))} pieces submitted", flush=True)
+        print(f"  [{tag}] round {rnd}: {len(program.get('pieces', []))} pieces submitted", flush=True)
 
-        round_dir = run_dir / model.replace("/", "_") / f"round_{rnd}"
+        round_dir = rounds_base / f"round_{rnd}"
         report, shot = run_eval(program, scenario, round_dir, ticks)
         attempt = Attempt(round=rnd, program=program, report=report, screenshot=shot, lookups=lookups)
         contender.attempts.append(attempt)
@@ -901,7 +981,7 @@ def compete(
         (round_dir / "usage.json").write_text(
             json.dumps({"harness": "driver-api", "model": model, **round_usage}, indent=2)
         )
-        print(f"  [{model}] round {rnd}: {attempt.summary}", flush=True)
+        print(f"  [{tag}] round {rnd}: {attempt.summary}", flush=True)
 
         messages.append(
             {
@@ -940,6 +1020,21 @@ def main() -> int:
         "they call tools, so give them room (e.g. 24000 for Laguna)",
     )
     parser.add_argument("--scenario", type=Path, default=DEFAULT_SCENARIO)
+    parser.add_argument(
+        "--scenarios",
+        type=int,
+        default=0,
+        help="run each model across the first N generated scenario parks (seeds from "
+        "evals/scenarios/seeds.json, regenerated deterministically on demand) and "
+        "aggregate scores across them; overrides --scenario",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=0,
+        help="max concurrent (model, scenario) competitions with --scenarios "
+        "(default: min(8, models*scenarios)); each runs its own game subprocess",
+    )
     parser.add_argument("--vertex", action="store_true", help="use Google Vertex AI instead of the first-party API")
     parser.add_argument(
         "--base-url",
@@ -999,7 +1094,15 @@ def main() -> int:
     if args.vertex and args.base_url:
         print("error: pick one of --vertex and --base-url", file=sys.stderr)
         return 1
-    if not args.scenario.exists():
+
+    scenarios: list[tuple[str, Path]] = []
+    if args.scenarios:
+        seeds = load_seeds(args.scenarios)
+        print(f"generating {len(seeds)} scenario park(s)...")
+        for seed in seeds:
+            park = ensure_generated_park(seed)
+            scenarios.append((f"seed_{seed}", park))
+    elif not args.scenario.exists():
         print(f"error: scenario not found: {args.scenario}", file=sys.stderr)
         return 1
 
@@ -1012,9 +1115,10 @@ def main() -> int:
 
     library = None
     if args.mode == "library":
-        library = dump_library(args.scenario, run_dir)
+        library_scenario = scenarios[0][1] if scenarios else args.scenario
+        library = dump_library(library_scenario, run_dir)
         print(f"track design library: {len(library)} designs")
-        ensure_library_previews(args.scenario)
+        ensure_library_previews(library_scenario)
 
     (run_dir / "run.json").write_text(
         json.dumps(
@@ -1025,7 +1129,11 @@ def main() -> int:
                 "rounds": args.rounds,
                 "ticks": args.ticks,
                 "ride_type": args.ride_type,
-                "scenario": args.scenario.name,
+                **(
+                    {"scenarios": [label for label, _ in scenarios], "seeds": seeds}
+                    if scenarios
+                    else {"scenario": args.scenario.name}
+                ),
                 "no_graphics": args.no_graphics,
                 **({"endpoint": args.base_url} if args.base_url else {}),
                 # The site reads the penalty parameters from here; keep the
@@ -1049,6 +1157,9 @@ def main() -> int:
         client = anthropic.AnthropicVertex(**kwargs)
     else:
         client = anthropic.Anthropic()
+    if scenarios:
+        return run_multi_scenario(client, args, scenarios, run_dir, library)
+
     contenders = [
         compete(client, model, args.rounds, args.scenario, run_dir, args.ticks, args.ride_type, library, args.max_tokens)
         for model in args.models
@@ -1078,6 +1189,97 @@ def main() -> int:
                     }
                     for c in ranked
                 ],
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def run_multi_scenario(
+    client,
+    args,
+    scenarios: list[tuple[str, Path]],
+    run_dir: Path,
+    library: list[dict] | None,
+) -> int:
+    """Fans (model, scenario) competitions out over a thread pool and writes
+    aggregate standings: per-scenario best, then mean/median across scenarios.
+
+    Each competition is independent (its own conversation and its own game
+    subprocesses), so a failure in one records a zero for that scenario rather
+    than sinking the run.
+    """
+    pairs = [(model, label, park) for model in args.models for label, park in scenarios]
+    workers = args.concurrency if args.concurrency > 0 else min(8, len(pairs))
+    print(f"running {len(pairs)} competitions ({len(args.models)} models x {len(scenarios)} scenarios, {workers} workers)")
+
+    def one(model: str, label: str, park: Path) -> Contender:
+        try:
+            return compete(
+                client, model, args.rounds, park, run_dir, args.ticks, args.ride_type, library, args.max_tokens, label
+            )
+        except Exception as e:
+            print(f"  [{model} @ {label}] FAILED: {e}", file=sys.stderr, flush=True)
+            return Contender(model=model)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {(model, label): pool.submit(one, model, label, park) for model, label, park in pairs}
+    results = {key: future.result() for key, future in futures.items()}
+
+    def best_excitement(c: Contender) -> float:
+        return c.best.excitement if c.best else 0.0
+
+    standings = []
+    for model in args.models:
+        per_scenario = []
+        for label, _ in scenarios:
+            c = results[(model, label)]
+            per_scenario.append(
+                {
+                    "scenario": label,
+                    "best_excitement": c.best.excitement if c.best else None,
+                    "best_raw_excitement": c.best.raw_excitement if c.best else None,
+                    "best_similarity": c.best.similarity if c.best else None,
+                    "rounds": len(c.attempts),
+                }
+            )
+        # A scenario with no rated coaster scores zero: aggregates must reflect
+        # reliability across parks, not just the parks that went well.
+        bests = [s["best_excitement"] or 0.0 for s in per_scenario]
+        standings.append(
+            {
+                "model": model,
+                "aggregate": {
+                    "mean_best_excitement": statistics.mean(bests),
+                    "median_best_excitement": statistics.median(bests),
+                    "scenarios_scored": sum(1 for b in bests if b > 0),
+                    "scenarios_total": len(bests),
+                },
+                "per_scenario": per_scenario,
+                "attempts": [
+                    {"scenario": label, "round": a.round, "summary": a.summary, "lookups": a.lookups}
+                    for label, _ in scenarios
+                    for a in results[(model, label)].attempts
+                ],
+            }
+        )
+    standings.sort(key=lambda s: s["aggregate"]["mean_best_excitement"], reverse=True)
+
+    print("\n=== FINAL STANDINGS (aggregate over scenarios) ===")
+    for place, entry in enumerate(standings, 1):
+        agg = entry["aggregate"]
+        print(
+            f"{place}. {entry['model']}: mean best excitement {agg['mean_best_excitement']:.2f} "
+            f"(median {agg['median_best_excitement']:.2f}, "
+            f"scored {agg['scenarios_scored']}/{agg['scenarios_total']} scenarios)"
+        )
+    (run_dir / "standings.json").write_text(
+        json.dumps(
+            {
+                "mode": args.mode,
+                "scenarios": [label for label, _ in scenarios],
+                "standings": standings,
             },
             indent=2,
         )

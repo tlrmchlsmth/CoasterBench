@@ -15,6 +15,7 @@
 #include <type_traits>
 
 uint32_t UtilRand();
+void UtilSRand(uint32_t seed); // fork: deterministic map generation (coasterbench --make-park)
 float UtilRandNormalDistributed();
 
 template<typename T>

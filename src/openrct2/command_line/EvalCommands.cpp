@@ -18,6 +18,7 @@
     #include "../ride/Ride.h"
     #include "../ride/RideManager.hpp"
     #include "../ride/RideRatings.h"
+    #include "../rustbridge/ParkGen.h"
     #include "../rustbridge/RustBridge.h"
     #include "CommandLine.hpp"
 
@@ -40,6 +41,12 @@ namespace OpenRCT2
     static bool _captureAllRotations = false;
     static bool _captureXray = false;
     static bool _noGraphics = false;
+    static u8string _makeParkPath{};
+    static int32_t _seed = 0;
+    static int32_t _mapSize = 100;
+    static int32_t _hilliness = -1;
+    static int32_t _water = -1;
+    static int32_t _cash = -1;
 
     // clang-format off
     static constexpr CommandLineOptionDefinition kEvalOptions[]
@@ -57,6 +64,12 @@ namespace OpenRCT2
         { CMDLINE_TYPE_SWITCH,  &_captureAllRotations,  kNAC, "capture-all-rotations", "with --capture, also write the other three view rotations as <name>-r1/-r2/-r3.png" },
         { CMDLINE_TYPE_SWITCH,  &_captureXray,          kNAC, "capture-xray",       "with --capture, also write a see-through verification view (terrain and supports hidden, every placed piece visible) as <name>-x.png" },
         { CMDLINE_TYPE_SWITCH,  &_noGraphics,           kNAC, "no-graphics",        "skip loading sprite data: no RCT2 assets required, but screenshots and library previews are unavailable" },
+        { CMDLINE_TYPE_STRING,  &_makeParkPath,         kNAC, "make-park",          "generate a deterministic eval park at this path (plus a .hints.json sidecar) and exit; no park file argument needed" },
+        { CMDLINE_TYPE_INTEGER, &_seed,                 kNAC, "seed",               "with --make-park, the generation seed (same seed, same park bytes; default 0)" },
+        { CMDLINE_TYPE_INTEGER, &_mapSize,              kNAC, "map-size",           "with --make-park, tiles per side including the void border (default 100)" },
+        { CMDLINE_TYPE_INTEGER, &_hilliness,            kNAC, "hilliness",          "with --make-park, terrain roughness 0 (flat) to 8 (default: derived from the seed)" },
+        { CMDLINE_TYPE_INTEGER, &_water,                kNAC, "water",              "with --make-park, water amount 0 (none) to 6 (default: derived from the seed)" },
+        { CMDLINE_TYPE_INTEGER, &_cash,                 kNAC, "cash",               "with --make-park, starting cash in whole currency units (default: money disabled)" },
         kOptionTableEnd
     };
 
@@ -70,8 +83,8 @@ namespace OpenRCT2
 
     static ExitCode HandleEval(CommandLineArgEnumerator* argEnumerator)
     {
-        const utf8* inputPath;
-        if (!argEnumerator->TryPopString(&inputPath))
+        const utf8* inputPath = nullptr;
+        if (!argEnumerator->TryPopString(&inputPath) && _makeParkPath.empty())
         {
             Console::Error::WriteLine("Expected a park/save/scenario file path");
             return ExitCode::fail;
@@ -98,6 +111,11 @@ namespace OpenRCT2
         // testing, ratings) works without sprite data, so no RCT2 assets are
         // needed — only anything that renders pixels is off the table.
         gOpenRCT2Headless = true;
+        if (!_makeParkPath.empty())
+        {
+            // Generation never renders anything, so it always runs assetless.
+            gOpenRCT2NoGraphics = true;
+        }
         if (_noGraphics)
         {
             if (!_capturePath.empty() || _captureAllRotations || _captureXray || !_renderLibraryDir.empty())
@@ -114,6 +132,19 @@ namespace OpenRCT2
         {
             Console::Error::WriteLine("Context initialization failed.");
             return ExitCode::fail;
+        }
+
+        if (!_makeParkPath.empty())
+        {
+            // Standalone mode: build a fresh deterministic park and exit.
+            ParkGen::Options options;
+            options.outPath = Path::GetAbsolute(_makeParkPath);
+            options.seed = static_cast<uint32_t>(_seed);
+            options.mapSize = _mapSize;
+            options.hilliness = _hilliness;
+            options.water = _water;
+            options.cashGBP = _cash;
+            return ParkGen::Generate(options) == 0 ? ExitCode::ok : ExitCode::fail;
         }
 
         if (!_dumpLibraryPath.empty())
