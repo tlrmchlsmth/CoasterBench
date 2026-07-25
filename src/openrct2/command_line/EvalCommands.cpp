@@ -39,6 +39,7 @@ namespace OpenRCT2
     static u8string _renderLibraryDir{};
     static bool _captureAllRotations = false;
     static bool _captureXray = false;
+    static bool _noGraphics = false;
 
     // clang-format off
     static constexpr CommandLineOptionDefinition kEvalOptions[]
@@ -55,6 +56,7 @@ namespace OpenRCT2
         { CMDLINE_TYPE_STRING,  &_renderLibraryDir,     kNAC, "render-library",     "render a preview PNG of every stock track design into this directory and exit" },
         { CMDLINE_TYPE_SWITCH,  &_captureAllRotations,  kNAC, "capture-all-rotations", "with --capture, also write the other three view rotations as <name>-r1/-r2/-r3.png" },
         { CMDLINE_TYPE_SWITCH,  &_captureXray,          kNAC, "capture-xray",       "with --capture, also write a see-through verification view (terrain and supports hidden, every placed piece visible) as <name>-x.png" },
+        { CMDLINE_TYPE_SWITCH,  &_noGraphics,           kNAC, "no-graphics",        "skip loading sprite data: no RCT2 assets required, but screenshots and library previews are unavailable" },
         kOptionTableEnd
     };
 
@@ -90,9 +92,22 @@ namespace OpenRCT2
             gCustomRCT2DataPath = Path::GetAbsolute(_evalRCT2DataPath);
         }
 
-        // Headless, but keep graphics data loaded (gOpenRCT2NoGraphics stays
-        // false) so CaptureImage can render screenshots of the result.
+        // Headless, but by default keep graphics data loaded (gOpenRCT2NoGraphics
+        // stays false) so CaptureImage can render screenshots of the result.
+        // --no-graphics drops that: the whole scoring path (park load, placement,
+        // testing, ratings) works without sprite data, so no RCT2 assets are
+        // needed — only anything that renders pixels is off the table.
         gOpenRCT2Headless = true;
+        if (_noGraphics)
+        {
+            if (!_capturePath.empty() || _captureAllRotations || _captureXray || !_renderLibraryDir.empty())
+            {
+                Console::Error::WriteLine(
+                    "--no-graphics cannot render: remove --capture/--capture-all-rotations/--capture-xray/--render-library");
+                return ExitCode::fail;
+            }
+            gOpenRCT2NoGraphics = true;
+        }
 
         std::unique_ptr<IContext> context(CreateContext());
         if (!context->Initialise())

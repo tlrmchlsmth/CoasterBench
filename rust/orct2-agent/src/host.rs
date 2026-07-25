@@ -108,6 +108,7 @@ unsafe extern "C" {
         err_len: usize,
     ) -> bool;
     fn orct2_host_ride_detail(ride_id: u16, out: *mut RideDetail) -> bool;
+    fn orct2_host_graphics_available() -> bool;
     fn orct2_host_capture(
         path: *const c_char,
         zoom: i32,
@@ -275,6 +276,12 @@ pub fn entrance_place(
     }
 }
 
+/// Whether sprite data is loaded. False under `eval --no-graphics` (no RCT2
+/// assets): screenshots cannot render, so image tools must not be offered.
+pub fn graphics_available() -> bool {
+    unsafe { orct2_host_graphics_available() }
+}
+
 /// Renders a park screenshot to `path` (PNG). With `fit_track` the view is
 /// cropped to the bounding box of all track in the park (falls back to the
 /// full map when no track exists). With `xray` terrain and supports are
@@ -416,6 +423,9 @@ mod test_stubs {
     }
     pub unsafe fn orct2_host_ride_detail(_r: u16, _o: *mut RideDetail) -> bool {
         false
+    }
+    pub unsafe fn orct2_host_graphics_available() -> bool {
+        true
     }
     pub unsafe fn orct2_host_capture(
         _p: *const c_char,

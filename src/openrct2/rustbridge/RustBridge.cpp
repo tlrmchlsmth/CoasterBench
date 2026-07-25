@@ -666,10 +666,20 @@ uint16_t orct2_host_track_mirror(uint16_t track_type)
     return mirror == TrackElemType::none ? track_type : static_cast<uint16_t>(mirror);
 }
 
+bool orct2_host_graphics_available(void)
+{
+    return !gOpenRCT2NoGraphics;
+}
+
 bool orct2_host_capture(const char* path, int32_t zoom, uint8_t rotation, bool fit_track, bool xray)
 {
     if (path == nullptr)
     {
+        return false;
+    }
+    if (gOpenRCT2NoGraphics)
+    {
+        LOG_ERROR("screenshot capture unavailable: running with --no-graphics (no sprite data loaded)");
         return false;
     }
     try

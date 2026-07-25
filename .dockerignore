@@ -2,3 +2,8 @@ bin/
 build/
 lib/
 obj/
+rust/orct2-agent/target/
+rust/coaster-bench/target/
+rust/coaster-site/target/
+evals/runs/
+evals/library-previews/

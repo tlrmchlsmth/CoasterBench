@@ -86,6 +86,18 @@ Non-bundled binaries look for `data/` next to the exe. One-time setup:
   See issue #1 and the readme war story.
 - Stalls never get ratings (RatingsCalculationType::Stall); tracked rides need
   a completed test circuit (RideFlag::tested) before ratings compute.
+- No-assets mode: `eval --no-graphics` sets gOpenRCT2NoGraphics so the whole
+  scoring path (park load, placement, testing, ratings, drawability gate) runs
+  with zero RCT2 files — objects come from the bundled JSON pack; only pixels
+  need g1.dat. Screenshots/--render-library are refused, the MCP server drops
+  image tools server-side (Modalities::server_side), and the similarity
+  penalty is inert (no stock library; report says `similarity: null`).
+  Assetless scenario default: test/tests/testdata/parks/BigMapTest.sv6
+  (mostly-open flat grass, cash-rich, builds fine). driver.py mirrors the
+  flag (`--no-graphics`, design mode only) and also takes `--base-url` for
+  any OpenAI-compatible endpoint (e.g. `vllm serve`); `evals/ci/` has the
+  CPU-only Dockerfile, a protocol-success gate (check_run.py), and the CI
+  job shape.
 - Head-to-head driver: `uv run evals/driver.py` (needs ANTHROPIC_API_KEY, or
   `--vertex` with GCP ADC; project defaults from $ANTHROPIC_VERTEX_PROJECT_ID);
   results under `evals/runs/<timestamp>/`. Models get a validate_track_program

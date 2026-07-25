@@ -145,6 +145,36 @@ retrieval and adaptation.
 uv run evals/driver.py --models claude-sonnet-5 --rounds 4 --mode library
 ```
 
+### Running without RCT2 assets
+
+Everything the eval scores — park loading, placement, ride testing, ratings,
+the drawability gate — is pure game logic; only rendering needs `g1.dat`.
+`--no-graphics` runs the whole benchmark with zero RollerCoaster Tycoon 2
+files (ride/scenery objects come from OpenRCT2's bundled JSON pack, and the
+scenario defaults to a checked-in test park):
+
+```bash
+./build/openrct2-cli eval test/tests/testdata/parks/BigMapTest.sv6 \
+    --no-graphics --ticks 25000 --program evals/programs/test_oval.json --out report.json
+```
+
+The trade: no screenshots (the MCP server drops its image tools, contenders
+run text-only), no stock library (library mode unavailable, similarity
+penalty inert — `run.json` records `no_graphics` so such runs are not
+compared against asset-full leaderboards).
+
+This is what makes the benchmark shippable in CI. The driver speaks to any
+OpenAI-compatible endpoint (a `vllm serve` under test, llama.cpp, ...) via
+`--base-url`; `evals/ci/` has the CPU-only Dockerfile and the pass/fail gate
+(protocol success — a built, tested coaster — not score, which is model
+quality, not infrastructure health).
+
+```bash
+uv run evals/driver.py --base-url http://localhost:8000/v1 \
+    --models Qwen/Qwen2.5-7B-Instruct --rounds 2 --no-graphics
+python3 evals/ci/check_run.py evals/runs/<run-dir>
+```
+
 ## MCP server
 
 ```bash

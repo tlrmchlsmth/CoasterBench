@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["anthropic[vertex]>=0.40"]
+# dependencies = ["anthropic[vertex]>=0.40", "openai>=1.40", "pillow>=10"]
 # ///
 """Coaster design head-to-head: two Claude models iteratively design a coaster.
 
@@ -25,6 +25,16 @@ Usage (Google Vertex AI; auth via `gcloud auth application-default login`):
 
 Vertex model IDs for current-generation models are the bare first-party
 strings (claude-opus-4-6, claude-sonnet-5) — no prefix, no @date suffix.
+
+Usage (any OpenAI-compatible endpoint, e.g. a local vLLM server):
+  vllm serve Qwen/Qwen2.5-7B-Instruct --enable-auto-tool-choice ...
+  uv run evals/driver.py --base-url http://localhost:8000/v1 \
+      --models Qwen/Qwen2.5-7B-Instruct --rounds 4 --no-graphics
+
+--no-graphics runs the game without RCT2 assets (design mode only): the
+scenario defaults to a checked-in test park, feedback is the eval report
+alone (no park screenshot), and the similarity penalty is inert because
+there is no stock library to compare against.
 """
 
 from __future__ import annotations
@@ -44,9 +54,56 @@ from pathlib import Path
 import anthropic
 
 REPO = Path(__file__).resolve().parent.parent
-CLI = REPO / "build" / "openrct2-cli"
+# COASTERBENCH_CLI lets a CI environment point at a binary that didn't come
+# from this checkout's build dir (e.g. extracted from the game image).
+CLI = Path(os.environ.get("COASTERBENCH_CLI", REPO / "build" / "openrct2-cli"))
 DEFAULT_SCENARIO = Path.home() / "rct2-assets" / "Scenarios" / "Build your own Six Flags Park.SC6"
 RCT2_DATA = Path.home() / "rct2-assets"
+# Assetless default: a checked-in upstream test park (large, mostly-open flat
+# grass, cash-rich) that loads and builds with only the bundled JSON objects.
+CI_SCENARIO = REPO / "test" / "tests" / "testdata" / "parks" / "BigMapTest.sv6"
+
+MAP_LINES = {
+    DEFAULT_SCENARIO.name: (
+        "Flat grass around tile (60, 60); a lake sits near map centre roughly tiles (68-85, 55-75) — do NOT "
+        "build into it. Stay within tiles 20-120. Directions: dir 0 faces -x, dir 1 faces +y, dir 2 faces +x, "
+        "dir 3 faces -y."
+    ),
+    CI_SCENARIO.name: (
+        "A large park: flat open grass across roughly tiles 30-190 on both axes, with scattered existing "
+        "rides and footpaths (placement errors will name what is in the way; shift a few tiles and retry). "
+        "Flat grass around tile (60, 60) is a good anchor. Directions: dir 0 faces -x, dir 1 faces +y, "
+        "dir 2 faces +x, dir 3 faces -y."
+    ),
+}
+
+# Set from --no-graphics in main(): the game loads no sprite data, so no RCT2
+# assets are needed and nothing can render (no screenshots, no previews).
+NO_GRAPHICS = False
+
+# Set from --schematic-feedback: attach the schematic track diagram (rendered
+# from the report's cursor trace, no assets needed) to round feedback, for
+# multimodal contenders in no-graphics runs.
+SCHEMATIC_FEEDBACK = False
+
+# Set to the run dir by main(): calls that fail (e.g. a reasoning model
+# exhausting its budget) dump their raw response here, because the response
+# body — especially a 131k-token thinking trace — is the evidence, and
+# raising without saving it has already lost that evidence twice.
+FAILED_CALL_DIR: Path | None = None
+
+
+def rct2_args() -> list[str]:
+    """The eval CLI either loads the RCT2 install or runs assetless."""
+    args = []
+    # Containers/chroots can't always resolve the data dir relative to the
+    # binary (/proc may be absent); CI sets this explicitly.
+    data = os.environ.get("COASTERBENCH_OPENRCT2_DATA")
+    if data:
+        args += ["--openrct2-data-path", data]
+    if NO_GRAPHICS:
+        return args + ["--no-graphics"]
+    return args + ["--rct2-data-path", str(RCT2_DATA)]
 
 PIECE_CATALOG = """
 Station (required, place these FIRST, 3+ in a row): begin_station, middle_station, end_station
@@ -92,9 +149,14 @@ def ride_type_info(ride_type: int) -> tuple[str, str]:
     return name, line + " This is the required type for this competition."
 
 
-def build_system_prompt(ride_type: int) -> str:
+def build_system_prompt(ride_type: int, scenario: Path) -> str:
     _, ride_line = ride_type_info(ride_type)
-    return SYSTEM_PROMPT.replace("{RIDE_TYPE_LINE}", ride_line)
+    map_line = MAP_LINES.get(
+        scenario.name,
+        "Terrain unknown; flat grass around tile (60, 60) is a reasonable first bet. Use validation "
+        "errors to find open ground. Directions: dir 0 faces -x, dir 1 faces +y, dir 2 faces +x, dir 3 faces -y.",
+    )
+    return SYSTEM_PROMPT.replace("{RIDE_TYPE_LINE}", ride_line).replace("{MAP_LINE}", map_line)
 
 
 SYSTEM_PROMPT = f"""You are competing to design the best RollerCoaster Tycoon 2 roller coaster.
@@ -124,7 +186,7 @@ Your track is also compared against the stock RCT2 track design library (mirrore
 {PIECE_CATALOG}
 
 ## Map
-Flat grass around tile (60, 60); a lake sits near map centre roughly tiles (68-85, 55-75) — do NOT build into it. Stay within tiles 20-120. Directions: dir 0 faces -x, dir 1 faces +y, dir 2 faces +x, dir 3 faces -y.
+{{MAP_LINE}}
 
 Before submitting, use the validate_track_program tool (same payload) to dry-run your program: it reports placement errors with the exact piece index, or whether the circuit closes, without spending your round. You get a limited number of validations per round, use them to fix geometry, then submit.
 
@@ -280,6 +342,72 @@ class Contender:
         return max(rated, key=lambda a: a.excitement) if rated else None
 
 
+STATION_PIECES = {"begin_station", "middle_station", "end_station"}
+
+
+def render_schematic(trace: list[dict], out_path: Path) -> Path | None:
+    """Draws the placed track as a two-panel PNG (top-down + isometric) from
+    the report's cursor trace — no game assets involved. Stations are green,
+    chain lift red, everything else shaded by height; an open circuit gets a
+    dashed gap line from track end back to the start."""
+    if len(trace) < 2:
+        return None
+    from PIL import Image, ImageDraw
+
+    pts = [(p["x"], p["y"], p["z"]) for p in trace]
+    zs = [z for _, _, z in pts]
+    z0, z1 = min(zs), max(zs)
+
+    def color(i: int) -> tuple[int, int, int]:
+        piece = trace[i]["piece"]
+        if piece in STATION_PIECES:
+            return (46, 160, 67)
+        if trace[i].get("chain"):
+            return (220, 68, 61)
+        t = (pts[i][2] - z0) / (z1 - z0) if z1 > z0 else 0.0
+        return (int(60 + 195 * t), int(120 - 40 * t), int(220 - 160 * t))
+
+    panels = {
+        "top": lambda x, y, z: (x, y),
+        "iso": lambda x, y, z: (x - y, (x + y) * 0.5 - z / 24),
+    }
+    size, margin = 640, 40
+    img = Image.new("RGB", (size * 2, size), (250, 250, 248))
+    draw = ImageDraw.Draw(img)
+
+    closed = pts[0][:2] == pts[-1][:2] and trace[0]["z"] == trace[-1]["z"]
+    for panel, (name, proj) in enumerate(panels.items()):
+        proj_pts = [proj(*p) for p in pts]
+        xs = [u for u, _ in proj_pts]
+        ys = [v for _, v in proj_pts]
+        span = max(max(xs) - min(xs), max(ys) - min(ys)) or 1.0
+        scale = (size - 2 * margin) / span
+
+        def to_px(uv, panel=panel, xs=xs, ys=ys, scale=scale):
+            return (
+                panel * size + margin + (uv[0] - min(xs)) * scale,
+                margin + (uv[1] - min(ys)) * scale,
+            )
+
+        px = [to_px(p) for p in proj_pts]
+        for i in range(1, len(px)):
+            draw.line([px[i - 1], px[i]], fill=color(i), width=4)
+        if not closed:
+            draw.line([px[-1], px[0]], fill=(150, 150, 150), width=2)
+        sx, sy = px[0]
+        draw.ellipse([sx - 5, sy - 5, sx + 5, sy + 5], outline=(0, 0, 0), width=2)
+        draw.text((panel * size + margin, size - margin + 8), name, fill=(90, 90, 90))
+
+    if not closed:
+        dx = pts[0][0] - pts[-1][0]
+        dy = pts[0][1] - pts[-1][1]
+        dz = trace[0]["z"] - trace[-1]["z"]
+        draw.text((margin, 8), f"OPEN CIRCUIT: gap to start  dx={dx}  dy={dy}  dz={dz}", fill=(180, 30, 30))
+    draw.text((size + margin, 8), "green=station  red=chain-lift  blue->orange=height", fill=(90, 90, 90))
+    img.save(out_path)
+    return out_path
+
+
 def run_eval(program: dict, scenario: Path, workdir: Path, ticks: int) -> tuple[dict, Path | None]:
     workdir.mkdir(parents=True, exist_ok=True)
     program_path = workdir / "program.json"
@@ -290,18 +418,25 @@ def run_eval(program: dict, scenario: Path, workdir: Path, ticks: int) -> tuple[
     cmd = [
         str(CLI), "eval", str(scenario),
         "--ticks", str(ticks),
-        "--rct2-data-path", str(RCT2_DATA),
+        *rct2_args(),
         "--program", str(program_path),
         "--out", str(report_path),
-        "--capture", str(capture_path),
-        "--capture-xray",
     ]
+    if not NO_GRAPHICS:
+        cmd += ["--capture", str(capture_path), "--capture-xray"]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if not report_path.exists():
         return {"program": {"ok": False, "error": {"message": f"eval crashed: {proc.stderr[-500:]}"}}}, None
 
     report = json.loads(report_path.read_text())
-    shot = None
+    trace = (report.get("program") or {}).get("trace") or []
+    schematic = None
+    if trace:
+        try:
+            schematic = render_schematic(trace, workdir / "track.png")
+        except Exception as e:  # a diagram must never sink the round
+            print(f"  schematic render failed: {e}", file=sys.stderr)
+    shot = schematic if SCHEMATIC_FEEDBACK else None
     if capture_path.exists():
         small = workdir / "park_small.png"
         # The API rejects images over 5 MB of base64 (~3.7 MB raw); tall parks
@@ -345,7 +480,7 @@ def validate_program(program: dict, scenario: Path) -> str:
             [
                 str(CLI), "eval", str(scenario),
                 "--ticks", "5",
-                "--rct2-data-path", str(RCT2_DATA),
+                *rct2_args(),
                 "--program", str(program_path),
                 "--out", str(report_path),
             ],
@@ -495,8 +630,187 @@ def feedback_content(attempt: Attempt) -> list[dict]:
     return content
 
 
+@dataclass
+class ToolUseBlock:
+    id: str
+    name: str
+    input: dict
+    type: str = "tool_use"
+
+
+@dataclass
+class TextBlock:
+    text: str
+    type: str = "text"
+
+
+@dataclass
+class ReasoningBlock:
+    """A reasoning model's thinking, preserved so it can be passed back on the
+    next turn (vLLM renders `reasoning` on assistant messages into the chat
+    template — verified: prompt_tokens grows by the trace length). Without
+    passback the model re-derives everything from scratch every call."""
+
+    text: str
+    type: str = "reasoning"
+
+
+@dataclass
+class _Usage:
+    input_tokens: int
+    output_tokens: int
+
+
+@dataclass
+class _Response:
+    content: list
+    usage: _Usage
+
+
+def _to_openai(message: dict) -> list[dict]:
+    """One anthropic-form history entry -> the OpenAI messages it becomes.
+
+    The driver only ever builds three shapes: a plain-string user message, a
+    user message holding tool_result blocks, and an assistant message whose
+    content is the block list a previous create() returned.
+    """
+    role = message["role"]
+    content = message["content"]
+    if role == "assistant":
+        text = "".join(b.text for b in content if b.type == "text")
+        reasoning = "".join(b.text for b in content if b.type == "reasoning")
+        calls = [
+            {"id": b.id, "type": "function", "function": {"name": b.name, "arguments": json.dumps(b.input)}}
+            for b in content
+            if b.type == "tool_use"
+        ]
+        msg: dict = {"role": "assistant", "content": text or None}
+        if reasoning:
+            msg["reasoning"] = reasoning
+        if calls:
+            msg["tool_calls"] = calls
+        return [msg]
+    if isinstance(content, str):
+        return [{"role": "user", "content": content}]
+    out: list[dict] = []
+    images: list[str] = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_result":
+            continue
+        inner = block.get("content")
+        texts: list[str] = []
+        if isinstance(inner, str):
+            texts.append(inner)
+        else:
+            for part in inner or []:
+                if part.get("type") == "text":
+                    texts.append(part["text"])
+                elif part.get("type") == "image":
+                    images.append(part["source"]["data"])
+        out.append(
+            {"role": "tool", "tool_call_id": block["tool_use_id"], "content": "\n".join(texts) or "(no text)"}
+        )
+    for data in images:
+        # OpenAI tool messages are text-only; a park screenshot rides along
+        # as a follow-up user message instead.
+        out.append(
+            {
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{data}"}}],
+            }
+        )
+    return out
+
+
+class OpenAICompat:
+    """Anthropic-messages-shaped facade over an OpenAI chat-completions
+    endpoint (vLLM serve, llama.cpp, OpenRouter, ...). compete() only touches
+    client.messages.create, response.content, and response.usage, so the tool
+    loop stays identical across lanes. Named and required tool_choice both map
+    onto the endpoint's structured-output support (vLLM: guided decoding via
+    --enable-auto-tool-choice)."""
+
+    def __init__(self, base_url: str, api_key: str, extra_body: dict | None = None):
+        import openai
+
+        # A thinking model can legitimately generate for well over the SDK's
+        # 10-minute default timeout (131k tokens at ~140 tok/s is ~15 min).
+        self._client = openai.OpenAI(base_url=base_url, api_key=api_key, timeout=3600)
+        # Endpoint-specific request extras, e.g. vLLM's chat_template_kwargs
+        # ({"enable_thinking": false} tames reasoning models whose thinking
+        # would otherwise exhaust any completion budget on this task).
+        self._extra_body = extra_body or {}
+        self.messages = self  # so client.messages.create(...) resolves here
+
+    def create(self, *, model: str, max_tokens: int, system: str, messages: list[dict], tools: list[dict], tool_choice: dict) -> _Response:
+        payload: list[dict] = [{"role": "system", "content": system}]
+        for message in messages:
+            payload.extend(_to_openai(message))
+        oa_tools = [
+            {
+                "type": "function",
+                "function": {"name": t["name"], "description": t.get("description", ""), "parameters": t["input_schema"]},
+            }
+            for t in tools
+        ]
+        oa_choice: str | dict = (
+            {"type": "function", "function": {"name": tool_choice["name"]}}
+            if tool_choice.get("type") == "tool"
+            else "required"
+        )
+        # tool_choice="required" is not airtight in the wild: vLLM's guided
+        # grammar can emit an empty call array, so a callless response gets
+        # retried rather than killing the run.
+        input_tokens = output_tokens = 0
+        for attempt in range(3):
+            resp = self._client.chat.completions.create(
+                model=model,
+                max_tokens=max_tokens,
+                messages=payload,
+                tools=oa_tools,
+                tool_choice=oa_choice,
+                extra_body=self._extra_body,
+            )
+            if resp.usage:
+                input_tokens += resp.usage.prompt_tokens
+                output_tokens += resp.usage.completion_tokens
+            choice = resp.choices[0].message
+            content: list = []
+            # The SDK model keeps unknown fields; reasoning arrives as an
+            # extra ("reasoning" on vLLM, "reasoning_content" on some stacks).
+            extra = choice.model_dump() if hasattr(choice, "model_dump") else {}
+            reasoning = extra.get("reasoning") or extra.get("reasoning_content")
+            if reasoning:
+                content.append(ReasoningBlock(text=reasoning))
+            if choice.content:
+                content.append(TextBlock(text=choice.content))
+            for call in choice.tool_calls or []:
+                try:
+                    args = json.loads(call.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                content.append(ToolUseBlock(id=call.id, name=call.function.name, input=args))
+            if any(b.type == "tool_use" for b in content):
+                return _Response(content=content, usage=_Usage(input_tokens, output_tokens))
+            if resp.choices[0].finish_reason == "length":
+                # Deterministic, so retrying just burns tokens: the model (a
+                # reasoning model, usually) hit the token ceiling while still
+                # thinking and never got to the call.
+                where = ""
+                if FAILED_CALL_DIR is not None:
+                    dump = FAILED_CALL_DIR / f"failed-call-{model.replace('/', '_')}.json"
+                    dump.write_text(json.dumps(resp.model_dump(), indent=1))
+                    where = f"; full response (thinking trace included) saved to {dump}"
+                raise RuntimeError(
+                    f"{model} exhausted max_tokens={max_tokens} before emitting a tool call "
+                    f"(reasoning models spend the budget thinking first; raise --max-tokens){where}"
+                )
+            print(f"  [{model}] no tool call (attempt {attempt + 1}/3), retrying", flush=True)
+        raise RuntimeError(f"{model} returned no tool call in 3 attempts despite tool_choice={oa_choice!r}")
+
+
 def compete(
-    client: anthropic.Anthropic | anthropic.AnthropicVertex,
+    client: anthropic.Anthropic | anthropic.AnthropicVertex | OpenAICompat,
     model: str,
     rounds: int,
     scenario: Path,
@@ -504,10 +818,11 @@ def compete(
     ticks: int,
     ride_type: int,
     library: list[dict] | None = None,
+    max_tokens: int = 8000,
 ) -> Contender:
     contender = Contender(model=model)
     ride_name, _ = ride_type_info(ride_type)
-    system_prompt = build_system_prompt(ride_type) + (LIBRARY_PROMPT if library is not None else "")
+    system_prompt = build_system_prompt(ride_type, scenario) + (LIBRARY_PROMPT if library is not None else "")
     tools = [TOOL, VALIDATE_TOOL] + (LIBRARY_TOOLS if library is not None else [])
     messages: list[dict] = [
         {
@@ -522,11 +837,14 @@ def compete(
         tool_use = None
         lookups: list[dict] = []
         round_usage = {"input_tokens": 0, "output_tokens": 0}
-        for step in range(MAX_LOOKUPS_PER_ROUND + 1):
-            force_submit = step == MAX_LOOKUPS_PER_ROUND
+        # Two extra forced-submit attempts: named tool_choice is not actually
+        # enforced by every endpoint (vLLM + poolside_v1 returned a different
+        # tool than the one forced), so the "guaranteed" final step isn't.
+        for step in range(MAX_LOOKUPS_PER_ROUND + 3):
+            force_submit = step >= MAX_LOOKUPS_PER_ROUND
             response = client.messages.create(
                 model=model,
-                max_tokens=8000,
+                max_tokens=max_tokens,
                 system=system_prompt,
                 messages=messages,
                 tools=tools,
@@ -548,6 +866,15 @@ def compete(
                 print(f"  [{model}] round {rnd}: {tool_use.name}({json.dumps(tool_use.input)})", flush=True)
                 result, lookup = library_tool_result(tool_use.name, tool_use.input, library or [])
                 lookups.append(lookup)
+            if step + 1 >= MAX_LOOKUPS_PER_ROUND:
+                # Named tool_choice is advisory on some stacks, so forcing has
+                # to happen in-band too: agentic models otherwise keep
+                # validating forever instead of ever submitting.
+                result += (
+                    "\n\nVALIDATION BUDGET EXHAUSTED: you must now call "
+                    "submit_track_program with your best current program. Do not "
+                    "call any other tool."
+                )
             messages.append(
                 {
                     "role": "user",
@@ -555,7 +882,7 @@ def compete(
                 }
             )
         if program is None or tool_use is None:
-            # Unreachable: the final loop step forces submit_track_program.
+            # Three forced-submit attempts all returned something else.
             raise RuntimeError(f"{model} never submitted a program in round {rnd}")
         if program.get("ride_type") != ride_type:
             print(
@@ -597,7 +924,7 @@ def main() -> int:
         default="design",
         help="design = from scratch; library = with track design library search (retrieval eval)",
     )
-    parser.add_argument("--rounds", type=int, default=4)
+    parser.add_argument("--rounds", type=int, default=6)
     parser.add_argument(
         "--ride-type",
         type=int,
@@ -605,8 +932,37 @@ def main() -> int:
         help="required coaster ride type for the competition (52 wooden, 51 steel twister)",
     )
     parser.add_argument("--ticks", type=int, default=25000)
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=8000,
+        help="completion token budget per request; reasoning models think before "
+        "they call tools, so give them room (e.g. 24000 for Laguna)",
+    )
     parser.add_argument("--scenario", type=Path, default=DEFAULT_SCENARIO)
     parser.add_argument("--vertex", action="store_true", help="use Google Vertex AI instead of the first-party API")
+    parser.add_argument(
+        "--base-url",
+        help="OpenAI-compatible endpoint (e.g. a vLLM server: http://localhost:8000/v1); "
+        "auth from $OPENAI_API_KEY, defaulting to 'EMPTY' for local servers",
+    )
+    parser.add_argument(
+        "--schematic-feedback",
+        action="store_true",
+        help="attach the asset-free schematic track diagram to round feedback "
+        "(multimodal contenders only; text-only models will reject image content)",
+    )
+    parser.add_argument(
+        "--chat-template-kwargs",
+        help="JSON merged into each request as vLLM chat_template_kwargs "
+        "(OpenAI lane only), e.g. '{\"enable_thinking\": false}'",
+    )
+    parser.add_argument(
+        "--no-graphics",
+        action="store_true",
+        help="run the game without RCT2 assets (design mode only): no screenshots in "
+        "feedback and no stock library, so the similarity penalty is inert",
+    )
     parser.add_argument(
         "--project",
         default=os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID"),
@@ -627,6 +983,22 @@ def main() -> int:
     if not CLI.exists():
         print(f"error: {CLI} not built", file=sys.stderr)
         return 1
+    if args.no_graphics:
+        if args.mode == "library":
+            print("error: library mode needs the RCT2 track designs; --no-graphics is design mode only", file=sys.stderr)
+            return 1
+        global NO_GRAPHICS
+        NO_GRAPHICS = True
+        if args.schematic_feedback:
+            global SCHEMATIC_FEEDBACK
+            SCHEMATIC_FEEDBACK = True
+        if args.scenario == DEFAULT_SCENARIO:
+            # The graphics-lane default lives in the RCT2 install; assetless
+            # runs default to the checked-in test park instead.
+            args.scenario = CI_SCENARIO
+    if args.vertex and args.base_url:
+        print("error: pick one of --vertex and --base-url", file=sys.stderr)
+        return 1
     if not args.scenario.exists():
         print(f"error: scenario not found: {args.scenario}", file=sys.stderr)
         return 1
@@ -634,6 +1006,8 @@ def main() -> int:
     suffix = args.name if args.name else time.strftime("%H%M%S")
     run_dir = REPO / "evals" / "runs" / f"{time.strftime('%Y%m%d')}-{suffix}"
     run_dir.mkdir(parents=True)
+    global FAILED_CALL_DIR
+    FAILED_CALL_DIR = run_dir
     print(f"run dir: {run_dir} (mode: {args.mode})")
 
     library = None
@@ -652,6 +1026,8 @@ def main() -> int:
                 "ticks": args.ticks,
                 "ride_type": args.ride_type,
                 "scenario": args.scenario.name,
+                "no_graphics": args.no_graphics,
+                **({"endpoint": args.base_url} if args.base_url else {}),
                 # The site reads the penalty parameters from here; keep the
                 # driver the single source of truth for the scoring math.
                 "similarity_grace": SIMILARITY_GRACE,
@@ -660,7 +1036,12 @@ def main() -> int:
         )
     )
 
-    if args.vertex:
+    if args.base_url:
+        extra_body = (
+            {"chat_template_kwargs": json.loads(args.chat_template_kwargs)} if args.chat_template_kwargs else None
+        )
+        client = OpenAICompat(args.base_url, os.environ.get("OPENAI_API_KEY", "EMPTY"), extra_body)
+    elif args.vertex:
         # Auth is GCP application-default credentials, not an Anthropic key.
         kwargs = {"region": args.region}
         if args.project:
@@ -669,7 +1050,7 @@ def main() -> int:
     else:
         client = anthropic.Anthropic()
     contenders = [
-        compete(client, model, args.rounds, args.scenario, run_dir, args.ticks, args.ride_type, library)
+        compete(client, model, args.rounds, args.scenario, run_dir, args.ticks, args.ride_type, library, args.max_tokens)
         for model in args.models
     ]
 

@@ -100,6 +100,21 @@ pub struct ProgramOutcome {
     /// serialised: the program JSON already spells out the pieces.
     #[serde(skip)]
     pub placed_types: Vec<u16>,
+    /// Cursor after each placed piece (tile coords), preceded by the start
+    /// cursor. Lets a renderer draw the layout schematically with no game
+    /// assets: point i to i+1 is the chord of piece i.
+    pub trace: Vec<TracePoint>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TracePoint {
+    /// Piece whose placement ended at this cursor; "start" for the first.
+    pub piece: String,
+    pub chain: bool,
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub dir: u8,
 }
 
 #[derive(Debug, Serialize)]
@@ -203,6 +218,15 @@ pub fn run(json: &str) -> ProgramOutcome {
     // Tiles occupied by station pieces, for entrance/exit placement.
     let mut station_tiles: Vec<(i32, i32)> = Vec::new();
 
+    outcome.trace.push(TracePoint {
+        piece: "start".into(),
+        chain: false,
+        x: cursor.x / 32,
+        y: cursor.y / 32,
+        z: cursor.z,
+        dir: cursor.direction,
+    });
+
     for (index, piece) in program.pieces.iter().enumerate() {
         let (piece_ref, chain) = piece.parts();
         let track_type = match resolve(piece_ref) {
@@ -222,6 +246,14 @@ pub fn run(json: &str) -> ProgramOutcome {
                 outcome.pieces_placed += 1;
                 outcome.total_cost += cost;
                 outcome.placed_types.push(track_type);
+                outcome.trace.push(TracePoint {
+                    piece: describe(track_type),
+                    chain,
+                    x: cursor.x / 32,
+                    y: cursor.y / 32,
+                    z: cursor.z,
+                    dir: cursor.direction,
+                });
                 // TrackElemType 1-3 are the station pieces.
                 if (1..=3).contains(&track_type) {
                     station_tiles.push(piece_tile);

@@ -63,6 +63,11 @@ typedef struct Orct2RideDetail {
   int16_t nausea;
   int32_t max_speed;
   int32_t average_speed;
+  /**
+   * Raw total length summed over stations, as 16.16 fixed-point metres
+   * (`Ride::getTotalLength()`). Divide by 2^16 for the human-readable metres
+   * the game shows; see `report::ride_length_metres`.
+   */
   int32_t ride_length;
   int16_t max_positive_g;
   int16_t max_negative_g;
@@ -194,6 +199,8 @@ extern bool orct2_host_ride_set_status(uint16_t ride_id,
                                        uintptr_t err_len);
 
 extern bool orct2_host_ride_detail(uint16_t ride_id, struct Orct2RideDetail *out);
+
+extern bool orct2_host_graphics_available(void);
 
 extern bool orct2_host_capture(const char *path,
                                int32_t zoom,

@@ -44,6 +44,23 @@ impl Modalities {
         self.0 & other.0 == other.0
     }
 
+    fn without(self, other: Modalities) -> Modalities {
+        Modalities(self.0 & !other.0)
+    }
+
+    /// What this server instance can actually produce: everything, minus
+    /// image content when sprite data is not loaded (`eval --no-graphics`).
+    /// Intersected with the client's advertised set per request, so a
+    /// no-graphics server never lists or answers the screenshot tools no
+    /// matter what the client claims to accept.
+    fn server_side() -> Modalities {
+        if host::graphics_available() {
+            Modalities::ALL
+        } else {
+            Modalities::ALL.without(Modalities::IMAGE)
+        }
+    }
+
     /// Parse a comma-separated list; unknown names are ignored.
     fn parse(list: &str) -> Modalities {
         list.split(',').fold(Modalities(0), |set, name| {
@@ -74,6 +91,13 @@ impl std::ops::BitOr for Modalities {
     type Output = Modalities;
     fn bitor(self, rhs: Modalities) -> Modalities {
         Modalities(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitAnd for Modalities {
+    type Output = Modalities;
+    fn bitand(self, rhs: Modalities) -> Modalities {
+        Modalities(self.0 & rhs.0)
     }
 }
 
@@ -270,7 +294,7 @@ fn handle_connection(stream: TcpStream, session: &mut Session) -> Result<(), Str
             Ok(None) => return Ok(()), // clean EOF
             Err(e) => return Err(e),
         };
-        let modalities = Modalities::from_request_target(&target);
+        let modalities = Modalities::from_request_target(&target) & Modalities::server_side();
         if method != "POST" {
             write_http(&mut stream, 405, "text/plain", b"method not allowed")?;
             continue;
@@ -407,7 +431,7 @@ fn dispatch(message: &Value, session: &mut Session, modalities: Modalities) -> V
                 return rpc_result(
                     id,
                     json!({
-                        "content": [{"type": "text", "text": format!("{name} is unavailable: this client did not advertise the content kind it answers with")}],
+                        "content": [{"type": "text", "text": format!("{name} is unavailable: either this client did not advertise the content kind it answers with, or the server cannot produce it (screenshots need sprite data, absent under --no-graphics)")}],
                         "isError": true,
                     }),
                 );
@@ -695,7 +719,13 @@ fn call_tool(name: &str, args: &Value, session: &mut Session) -> Result<Vec<Valu
                 let prev = session.best_test.as_ref().and_then(report_excitement);
                 if prev.is_none_or(|b| excitement > b) {
                     session.best_test = Some(report.clone());
-                    session.best_shot = capture_park_png().ok();
+                    // Under --no-graphics nothing can render; skip rather than
+                    // log a capture error every improved test.
+                    session.best_shot = if host::graphics_available() {
+                        capture_park_png().ok()
+                    } else {
+                        None
+                    };
                 }
             }
             Ok(text_content(report))
