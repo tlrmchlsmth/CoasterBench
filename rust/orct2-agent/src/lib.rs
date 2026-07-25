@@ -16,6 +16,7 @@ mod pieces;
 mod program;
 mod report;
 mod similarity;
+mod stalls;
 
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -37,8 +38,33 @@ pub extern "C" fn orct2_agent_tick(tick: u32) {
     let _ = tick;
 }
 
-/// Reads a JSON track program from `path` and executes it against the live
-/// game (create ride, place pieces, flip to testing). Returns an owned outcome
+/// Executes a JSON program against the live game. Three program shapes share
+/// the one flag: a track program ("pieces": create ride, place pieces, flip
+/// to testing/open), a stall plan ("stalls": place and open stalls), and a
+/// combined program (both keys: track first, then stalls around it — the
+/// max-vomit goal's feed-them-then-spin-them loop). In a combined program the
+/// stalls only run once the whole track built and closed; a stall rejection
+/// reports a piece_index continuing past the track pieces.
+fn run_program_json(json: &str) -> ProgramOutcome {
+    let value: serde_json::Value = match serde_json::from_str(json) {
+        Ok(v) => v,
+        Err(e) => return ProgramOutcome::failure(format!("invalid program JSON: {e}")),
+    };
+    match (value.get("pieces").is_some(), value.get("stalls").is_some()) {
+        (true, true) => {
+            let mut outcome = program::run(json);
+            if outcome.ok {
+                stalls::merge(&mut outcome, stalls::run(json));
+            }
+            outcome
+        }
+        (false, true) => stalls::run(json),
+        _ => program::run(json),
+    }
+}
+
+/// Reads a JSON program from `path` and executes it against the live game
+/// (see `run_program_json` for the accepted shapes). Returns an owned outcome
 /// handle; pass it to `orct2_agent_eval_finish`, which frees it. Never null.
 ///
 /// # Safety
@@ -48,7 +74,7 @@ pub unsafe extern "C" fn orct2_agent_run_program(path: *const c_char) -> *mut Pr
     let outcome = match read_c_path(path)
         .map(|p| std::fs::read_to_string(&p).map_err(|e| format!("read {p}: {e}")))
     {
-        Some(Ok(json)) => program::run(&json),
+        Some(Ok(json)) => run_program_json(&json),
         Some(Err(message)) => ProgramOutcome::failure(message),
         None => ProgramOutcome::failure("null/invalid program path".into()),
     };
@@ -260,6 +286,39 @@ mod tests {
     #[test]
     fn init_reports_success() {
         assert_eq!(orct2_agent_init(), 0);
+    }
+
+    #[test]
+    fn program_dispatch_picks_the_right_executor() {
+        // Stall-only programs go to the stall executor (stub host refuses
+        // placement, and the error names the stall, not a ride).
+        let stall_only =
+            run_program_json(r#"{"stalls": [{"stall_type": "food", "x": 1, "y": 2, "dir": 0}]}"#);
+        assert!(stall_only
+            .error
+            .expect("error")
+            .message
+            .contains("stall 'food'"));
+
+        // Track and combined programs both start with the track build; the
+        // stub host fails ride creation, so the stalls never run and the
+        // error is the track's.
+        let combined = run_program_json(
+            r#"{"ride_type": 51, "start": {"x": 1, "y": 2, "dir": 0}, "pieces": ["flat"],
+                "stalls": [{"stall_type": "food", "x": 1, "y": 2, "dir": 0}]}"#,
+        );
+        assert!(combined
+            .error
+            .expect("error")
+            .message
+            .contains("ride_create"));
+        assert!(
+            combined.stall_ids.is_empty(),
+            "no stalls after a failed track"
+        );
+
+        // Garbage is a parse failure, not a panic.
+        assert!(!run_program_json("not json").ok);
     }
 
     #[test]

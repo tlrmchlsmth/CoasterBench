@@ -29,6 +29,33 @@ pub fn mode_tagline(mode: &str) -> String {
         .unwrap_or_else(|| mode.to_string())
 }
 
+pub const GOAL_TAGLINES: [(&str, &str); 4] = [
+    (
+        "best-coaster",
+        "design the highest-excitement coaster from an empty field",
+    ),
+    (
+        "finish-the-coaster",
+        "close a committed half-built track into a circuit within a piece budget; scored on excitement",
+    ),
+    (
+        "guest-services",
+        "place stalls and set prices in a living park; scored on stall profit + park rating change",
+    ),
+    (
+        "max-vomit",
+        "open the ride to real guests and make them sick; scored on vomit piles added to the ground",
+    ),
+];
+
+pub fn goal_tagline(goal: &str) -> String {
+    GOAL_TAGLINES
+        .iter()
+        .find(|(name, _)| *name == goal)
+        .map(|(_, tagline)| (*tagline).to_string())
+        .unwrap_or_else(|| goal.to_string())
+}
+
 pub fn fmt_tokens(n: f64) -> String {
     if n >= 1_000_000.0 {
         format!("{:.1}M", n / 1_000_000.0)
@@ -162,6 +189,7 @@ pub struct IndexRow {
     /// The model's own detail page.
     pub model_href: String,
     pub date: String,
+    pub goal: String,
     pub mode: String,
     pub coaster: String,
     pub harness: String,
@@ -187,12 +215,22 @@ pub struct Facet {
     pub values: Vec<String>,
 }
 
+/// One goal's slice of the leaderboard. Scores only compare within a goal, so
+/// each goal gets its own table (and its own score ordering).
+pub struct GoalSection {
+    pub goal: String,
+    pub tagline: String,
+    pub rows: Vec<IndexRow>,
+}
+
 #[derive(Template)]
 #[template(path = "index.html")]
 pub struct IndexPage {
     pub chrome: Chrome,
     pub facets: Vec<Facet>,
-    pub rows: Vec<IndexRow>,
+    pub sections: Vec<GoalSection>,
+    /// Total rows across sections (drives the head-to-head link and empty state).
+    pub total_rows: usize,
     pub have_previews: bool,
     pub mode_taglines: Vec<(String, String)>,
     /// Runs left out because they never finished, newest first.
@@ -274,7 +312,8 @@ pub struct ModelView {
 pub struct RunPage {
     pub chrome: Chrome,
     pub mode_tagline: String,
-    pub grace: String,
+    /// Goal-aware explanation of the score column, shown as a footnote.
+    pub score_note: String,
     pub standings: Vec<StandingRow>,
     pub models: Vec<ModelView>,
 }
@@ -347,6 +386,7 @@ pub struct Contender {
     pub date: String,
     pub model: String,
     pub coaster: String,
+    pub goal: String,
     pub mode: String,
     pub harness: String,
     pub thumb: Option<String>,

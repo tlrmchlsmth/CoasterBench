@@ -1,0 +1,488 @@
+{
+  "program": {
+    "ok": false,
+    "ride_id": 100,
+    "pieces_placed": 19,
+    "pieces_total": 61,
+    "total_cost": 15780,
+    "error": {
+      "piece_index": 19,
+      "piece": "down_25",
+      "message": "piece 'down_25' rejected at cursor (x=45, y=54, z=120, dir=3): Raise or lower land first"
+    },
+    "end_cursor": {
+      "x": 45,
+      "y": 54,
+      "z": 120,
+      "dir": 3,
+      "bank": 0,
+      "slope": 6
+    },
+    "trace": [
+      {
+        "piece": "start",
+        "chain": false,
+        "x": 60,
+        "y": 60,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "begin_station",
+        "chain": false,
+        "x": 59,
+        "y": 60,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "middle_station",
+        "chain": false,
+        "x": 58,
+        "y": 60,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "middle_station",
+        "chain": false,
+        "x": 57,
+        "y": 60,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "end_station",
+        "chain": false,
+        "x": 56,
+        "y": 60,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat_to_up_25",
+        "chain": true,
+        "x": 55,
+        "y": 60,
+        "z": 120,
+        "dir": 0
+      },
+      {
+        "piece": "up_25",
+        "chain": true,
+        "x": 54,
+        "y": 60,
+        "z": 136,
+        "dir": 0
+      },
+      {
+        "piece": "up_25",
+        "chain": true,
+        "x": 53,
+        "y": 60,
+        "z": 152,
+        "dir": 0
+      },
+      {
+        "piece": "up_25",
+        "chain": true,
+        "x": 52,
+        "y": 60,
+        "z": 168,
+        "dir": 0
+      },
+      {
+        "piece": "up_25",
+        "chain": true,
+        "x": 51,
+        "y": 60,
+        "z": 184,
+        "dir": 0
+      },
+      {
+        "piece": "up_25_to_flat",
+        "chain": false,
+        "x": 50,
+        "y": 60,
+        "z": 192,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 49,
+        "y": 60,
+        "z": 192,
+        "dir": 0
+      },
+      {
+        "piece": "flat_to_down_25",
+        "chain": false,
+        "x": 48,
+        "y": 60,
+        "z": 184,
+        "dir": 0
+      },
+      {
+        "piece": "down_25",
+        "chain": false,
+        "x": 47,
+        "y": 60,
+        "z": 168,
+        "dir": 0
+      },
+      {
+        "piece": "down_25_to_flat",
+        "chain": false,
+        "x": 46,
+        "y": 60,
+        "z": 160,
+        "dir": 0
+      },
+      {
+        "piece": "left_turn_3",
+        "chain": false,
+        "x": 45,
+        "y": 58,
+        "z": 160,
+        "dir": 3
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 45,
+        "y": 57,
+        "z": 160,
+        "dir": 3
+      },
+      {
+        "piece": "flat_to_down_25",
+        "chain": false,
+        "x": 45,
+        "y": 56,
+        "z": 152,
+        "dir": 3
+      },
+      {
+        "piece": "down_25",
+        "chain": false,
+        "x": 45,
+        "y": 55,
+        "z": 136,
+        "dir": 3
+      },
+      {
+        "piece": "down_25",
+        "chain": false,
+        "x": 45,
+        "y": 54,
+        "z": 120,
+        "dir": 3
+      }
+    ]
+  },
+  "bounds": {
+    "min_tile_x": 45,
+    "min_tile_y": 55,
+    "max_tile_x": 254,
+    "max_tile_y": 254,
+    "min_z": 112,
+    "max_z": 1136
+  },
+  "rides": [
+    {
+      "id": 100,
+      "ride_type": 51,
+      "status": "closed",
+      "tested": false,
+      "crashed": false,
+      "excitement": null,
+      "intensity": null,
+      "nausea": null,
+      "max_speed": 0,
+      "average_speed": 0,
+      "ride_length": 0,
+      "max_positive_g": 0.0,
+      "max_negative_g": 0.0,
+      "max_lateral_g": 0.0,
+      "total_air_time": 0,
+      "num_drops": 0,
+      "highest_drop": 0,
+      "num_inversions": 0
+    }
+  ],
+  "park": {
+    "park_rating": 999,
+    "park_rating_start": 999,
+    "park_rating_delta": 0,
+    "guests_count": 1887,
+    "vomit_count": 16,
+    "vomit_delta": 10,
+    "vomit_events": 114,
+    "stall_profit": null,
+    "stalls": [
+      {
+        "id": 71,
+        "ride_type": 35,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -257.3,
+        "total_customers": 293
+      },
+      {
+        "id": 72,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -13.2,
+        "total_customers": 44
+      },
+      {
+        "id": 73,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -32.0,
+        "total_customers": 64
+      },
+      {
+        "id": 74,
+        "ride_type": 32,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -8.4,
+        "total_customers": 28
+      },
+      {
+        "id": 75,
+        "ride_type": 48,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 6
+      },
+      {
+        "id": 76,
+        "ride_type": 30,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -26.4,
+        "total_customers": 88
+      },
+      {
+        "id": 77,
+        "ride_type": 48,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 2
+      },
+      {
+        "id": 78,
+        "ride_type": 32,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -72.9,
+        "total_customers": 243
+      },
+      {
+        "id": 79,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -48.7,
+        "total_customers": 100
+      },
+      {
+        "id": 80,
+        "ride_type": 35,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -261.8,
+        "total_customers": 243
+      },
+      {
+        "id": 81,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -52.5,
+        "total_customers": 105
+      },
+      {
+        "id": 82,
+        "ride_type": 36,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 143
+      },
+      {
+        "id": 83,
+        "ride_type": 36,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 54
+      },
+      {
+        "id": 84,
+        "ride_type": 36,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 113
+      },
+      {
+        "id": 85,
+        "ride_type": 36,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 62
+      },
+      {
+        "id": 86,
+        "ride_type": 45,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 0
+      },
+      {
+        "id": 87,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -47.5,
+        "total_customers": 95
+      },
+      {
+        "id": 88,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -5.0,
+        "total_customers": 10
+      },
+      {
+        "id": 89,
+        "ride_type": 30,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -2.1,
+        "total_customers": 7
+      },
+      {
+        "id": 90,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -1.5,
+        "total_customers": 3
+      },
+      {
+        "id": 91,
+        "ride_type": 32,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -1.8,
+        "total_customers": 6
+      },
+      {
+        "id": 92,
+        "ride_type": 36,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 8
+      },
+      {
+        "id": 93,
+        "ride_type": 48,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 16
+      },
+      {
+        "id": 94,
+        "ride_type": 48,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 1
+      },
+      {
+        "id": 95,
+        "ride_type": 48,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 35
+      },
+      {
+        "id": 96,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -85.5,
+        "total_customers": 171
+      },
+      {
+        "id": 97,
+        "ride_type": 30,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -39.3,
+        "total_customers": 131
+      },
+      {
+        "id": 98,
+        "ride_type": 35,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -825.2,
+        "total_customers": 785
+      },
+      {
+        "id": 99,
+        "ride_type": 36,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 102
+      }
+    ]
+  },
+  "similarity": null
+}

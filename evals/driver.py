@@ -2,13 +2,31 @@
 # requires-python = ">=3.11"
 # dependencies = ["anthropic[vertex]>=0.40", "openai>=1.40", "pillow>=10"]
 # ///
-"""Coaster design head-to-head: two Claude models iteratively design a coaster.
+"""Park-building head-to-head: models compete on a declared eval goal.
 
-Each round the model submits a JSON track program (via forced tool use); the
-harness runs `openrct2-cli eval` on a fresh copy of the scenario, then feeds
-back the eval report and a park screenshot. Best excitement across rounds wins.
+Each round the model submits a plan (via forced tool use); the harness runs
+`openrct2-cli eval` on a fresh copy of the scenario, then feeds back the
+eval report and a park screenshot. Best score across rounds wins.
 
-Two modes:
+Three goals (--goal, recorded in run.json; scenario x goal compose freely):
+  best-coaster       (default) — design a coaster from scratch; score is the
+                     tested ride's excitement, similarity-penalized.
+  finish-the-coaster — the harness builds a committed track prefix (station,
+                     lift, first stretch; return path missing) and the model
+                     must close the circuit within a piece budget. Score is
+                     excitement; only the model's continuation counts in the
+                     similarity check.
+  guest-services     — a park with paths and guests; the model places stalls
+                     and sets prices. Score = stall profit (dollars) + park
+                     rating delta over the simulated ticks. Needs a scenario
+                     with guests flowing.
+  max-vomit          — the model's coaster is OPENED in a guest-filled park and
+                     the score is the increase in vomit piles on the ground
+                     (engine-counted Litter entities). High nausea fills
+                     stomachs; too-high intensity empties queues. Needs a
+                     scenario with guests flowing.
+
+Two modes (coaster goals only):
   design  (default) — the model designs from scratch; pure design ability.
   library — the model can additionally search the stock RCT2 track design
             library and read full piece sequences; tests information retrieval
@@ -41,6 +59,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import json
 import os
 import re
@@ -208,11 +227,8 @@ def build_system_prompt(ride_type: int, scenario: Path) -> str:
     return SYSTEM_PROMPT.replace("{RIDE_TYPE_LINE}", ride_line).replace("{MAP_LINE}", scenario_map_line(scenario))
 
 
-SYSTEM_PROMPT = f"""You are competing to design the best RollerCoaster Tycoon 2 roller coaster.
-You submit a "track program": a ride type, a start tile, and an ordered list of track pieces.
-The game engine builds it piece by piece, tests it with a real train, and rates it.
-
-## Rules of track geometry
+# Shared by every coaster goal (best-coaster and finish-the-coaster).
+TRACK_GEOMETRY = f"""## Rules of track geometry
 - Pieces chain sequentially from a cursor (position + facing direction). Each piece moves/rotates the cursor.
 - The track must form a CLOSED CIRCUIT: the last piece must end exactly where the first begins, facing the same direction, at the same height. Total up-slope pieces must equal total down-slope pieces of the same steepness.
 - A trick for closure: any identical piece sequence ending in a 90-degree turn, repeated 4 times, closes a rectangle.
@@ -223,23 +239,98 @@ The game engine builds it piece by piece, tests it with a real train, and rates 
 - Sloped pieces cannot be banked. Transitions matter: up_25 cannot follow flat directly, use flat_to_up_25.
 - The train coasts on gravity after the lift. If it stalls (too little energy for a hill), the test fails or takes forever. Drops give speed; friction bleeds it.
 
-## Ride types
-{{RIDE_TYPE_LINE}}
-
-## Scoring (from the real game engine)
-Excitement is primary (higher wins). It rewards: drops, speed, airtime, direction changes, banked turns, length. Intensity above ~10 tanks excitement (guests won't ride); keep intensity under 10.00. Crashes disqualify.
-
-Your track is also compared against the stock RCT2 track design library (mirrored variants included). Similarity up to 0.5 is free; above that your excitement is scaled down linearly, reaching zero for an exact copy. Design something original; reproducing a stock coaster from memory scores nothing.
-
 ## Piece catalog
 {PIECE_CATALOG}
 
 ## Map
-{{MAP_LINE}}
+{{MAP_LINE}}"""
+
+COASTER_SCORING = """## Scoring (from the real game engine)
+Excitement is primary (higher wins). It rewards: drops, speed, airtime, direction changes, banked turns, length. Intensity above ~10 tanks excitement (guests won't ride); keep intensity under 10.00. Crashes disqualify."""
+
+SYSTEM_PROMPT = f"""You are competing to design the best RollerCoaster Tycoon 2 roller coaster.
+You submit a "track program": a ride type, a start tile, and an ordered list of track pieces.
+The game engine builds it piece by piece, tests it with a real train, and rates it.
+
+{TRACK_GEOMETRY}
+
+## Ride types
+{{RIDE_TYPE_LINE}}
+
+{COASTER_SCORING}
+
+Your track is also compared against the stock RCT2 track design library (mirrored variants included). Similarity up to 0.5 is free; above that your excitement is scaled down linearly, reaching zero for an exact copy. Design something original; reproducing a stock coaster from memory scores nothing.
 
 Before submitting, use the validate_track_program tool (same payload) to dry-run your program: it reports placement errors with the exact piece index, or whether the circuit closes, without spending your round. You get a limited number of validations per round, use them to fix geometry, then submit.
 
 Submit via the submit_track_program tool. After each attempt you get the eval report (placement errors with exact piece index, or ride stats) and a park screenshot. Iterate and maximise excitement."""
+
+# finish-the-coaster: {PREFIX_*} placeholders are filled per run by the goal.
+FINISH_SYSTEM_PROMPT = f"""You are competing to FINISH a partially built RollerCoaster Tycoon 2 roller coaster.
+The harness has already committed a track prefix — station, lift hill, and the first stretch — but the return path is missing. You submit only the CONTINUATION: an ordered list of pieces that carries the track from the current cursor back to the station and closes the circuit. The game engine then builds prefix + continuation, tests the ride with a real train, and rates it.
+
+{TRACK_GEOMETRY}
+
+## Ride types
+{{RIDE_TYPE_LINE}}
+
+## The committed prefix (already built; you cannot change or remove it)
+{{PREFIX_JSON}}
+
+The track begins at tile {{PREFIX_START}} and after the prefix the cursor stands at {{PREFIX_END}} (z is height units above sea level, bank 0 = unbanked, slope 0 = flat). Your continuation starts exactly there and must return the cursor to the start tile at the start height, facing the start direction, unbanked and flat.
+
+## Budget
+Your continuation may use at most {{PREFIX_BUDGET}} pieces.
+
+{COASTER_SCORING}
+
+Only YOUR continuation pieces are compared against the stock design library for the similarity penalty (up to 0.5 free, scaled to zero at an exact copy); the committed prefix is not held against you.
+
+Before submitting, use the validate_track_completion tool (same payload) to dry-run: the harness prepends the prefix and reports placement errors with the exact continuation piece index, or whether the circuit closes, without spending your round. Validations per round are limited.
+
+Submit via the submit_track_completion tool. After each attempt you get the eval report and a park screenshot. Iterate and maximise excitement."""
+
+VOMIT_SYSTEM_PROMPT = f"""You are competing to build the most SICKENING RollerCoaster Tycoon 2 roller coaster: the winner is the one whose riders throw up the most.
+You submit a "track program": a ride type, a start tile, and an ordered list of track pieces.
+The park is live, with real guests walking real footpaths. The harness builds your track, OPENS the ride, and lets guests queue, board, ride, and stagger off. Every pile of vomit they leave on the ground is counted by the game engine.
+
+{TRACK_GEOMETRY}
+
+## Ride types
+{{RIDE_TYPE_LINE}}
+
+## How vomit works (real game mechanics)
+- Nausea makes riders sick, and sick guests vomit onto the paths shortly after disembarking. Nausea comes from helices, tight turns, rapid direction changes, and sustained lateral G-forces (unbanked turns at speed).
+- A FULL STOMACH DOUBLES NAUSEA: the engine scales ride nausea by the guest's fullness, from +0% at half-full up to +100% completely full. Vomiting halves the stomach again, so without food nearby a guest's best vomit is their first.
+- Guests check the ride's INTENSITY rating against their own tolerance before boarding. A ride so intense nobody dares queue produces zero riders and zero vomit. The sweet spot is maximum nausea at an intensity guests still accept.
+- Throughput matters: more riders per hour means more stomachs emptied. Guests also refuse to re-ride when too hungry, too thirsty, or still queasy, so refreshments sustain the loop.
+- Guests must be able to REACH the ride: place the station beside the park's footpaths. The harness auto-places the entrance and exit on tiles next to the station.
+- Crashes close the ride. A closed ride collects no vomit.
+
+## Stalls (optional, recommended)
+Your submission may include a "stalls" array to build food and drink alongside the coaster: {{"stalls": [{{"stall_type": "food", "x": 62, "y": 60, "dir": 1, "price": 1.5}}]}}. Types: food, drink, shop, information_kiosk, toilets, cash_machine, first_aid. A stall occupies one tile; its facing side (dir: 0=-x, 1=+y, 2=+x, 3=-y) is the door and must touch a footpath. Stalls are built AFTER the track; a stall rejection reports an index continuing past your track pieces. The classic play: food by the ride exit to refill stomachs, drink to keep guests re-riding. (Stall litter is not vomit; only actual vomit counts.)
+
+## Scoring
+score = the number of times guests throw up during the simulated period, counted by the engine at the moment of the act. Every heave counts, even ones handymen sweep away afterwards. Build failures, open circuits, and rejected stalls score nothing.
+
+Before submitting, use the validate_track_program tool (same payload) to dry-run your program: it reports placement errors with the exact index, or whether the circuit closes, without spending your round. You get a limited number of validations per round.
+
+Submit via the submit_track_program tool. After each attempt you get the eval report (vomit count, ride ratings, guest count, per-stall sales) and a park screenshot — look for the pale green-grey piles near your exit. Iterate and maximise vomit."""
+
+GUEST_SYSTEM_PROMPT = """You are competing to run the best guest services in a live RollerCoaster Tycoon 2 park.
+The park already has footpaths, rides, and guests walking around. You submit a "stall plan": a list of stalls to build, each with a type, a tile, a facing, and an item price. The harness builds and opens them all, simulates the park, and measures what your stalls earned and what happened to the park rating.
+
+## Rules of stall placement
+- Stall types: food, drink, shop (souvenirs), information_kiosk (park maps/umbrellas), toilets, cash_machine, first_aid.
+- A stall occupies one tile of buildable land. Its facing side (dir) is the door: guests can only enter from that side, so it must directly touch a footpath tile. Directions: dir 0 faces -x, dir 1 faces +y, dir 2 faces +x, dir 3 faces -y.
+- Placement is validated by the real game (terrain, clearance, ownership); the first rejected stall aborts the plan at that index.
+- price is the primary item price in dollars (e.g. 1.50). Omit it to keep the stall's default. Guests refuse prices they consider a rip-off, and cheap essentials (toilets!) draw crowds.
+- Guests get hungry, thirsty, and desperate over time; coverage near busy paths and ride exits earns the most. Toilets and information kiosks earn little directly but lift guest happiness — and the park rating.
+
+## Scoring
+score = combined lifetime profit of YOUR stalls in dollars + the park rating change (0-999 scale) over the simulated period. Both are read from the game engine.
+
+Study the park screenshot to find the paths and where guests cluster. Use the validate_stall_plan tool (same payload) to dry-run placement without spending your round; validations per round are limited. Submit via the submit_stall_plan tool. After each attempt you get the eval report (per-stall profit and customers, park rating, guest count) and a fresh screenshot. Iterate and maximise your score."""
 
 LIBRARY_PROMPT = """
 
@@ -315,6 +406,106 @@ TOOL = {
 
 VALIDATE_TOOL["input_schema"] = TOOL["input_schema"]
 
+# finish-the-coaster: the model sends only the continuation pieces; the
+# harness prepends the committed prefix before running the eval.
+COMPLETION_SCHEMA = {
+    "type": "object",
+    "required": ["pieces"],
+    "properties": {
+        "pieces": TOOL["input_schema"]["properties"]["pieces"],
+    },
+}
+
+FINISH_TOOL = {
+    "name": "submit_track_completion",
+    "description": "Submit the continuation pieces that close the committed prefix into a full circuit. "
+    "The harness prepends the prefix, builds the whole track, tests it, and rates it.",
+    "input_schema": COMPLETION_SCHEMA,
+}
+
+FINISH_VALIDATE_TOOL = {
+    "name": "validate_track_completion",
+    "description": "Dry-run a continuation: the harness prepends the committed prefix and builds the "
+    "whole track, reporting placement errors (with exact piece index into the full program) or whether "
+    "the circuit closes, WITHOUT spending your round. Same payload as submit_track_completion.",
+    "input_schema": COMPLETION_SCHEMA,
+}
+
+# guest-services: a stall plan instead of a track program.
+STALL_PLAN_SCHEMA = {
+    "type": "object",
+    "required": ["stalls"],
+    "properties": {
+        "stalls": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "required": ["stall_type", "x", "y", "dir"],
+                "properties": {
+                    "stall_type": {
+                        "type": "string",
+                        "enum": [
+                            "food",
+                            "drink",
+                            "shop",
+                            "information_kiosk",
+                            "toilets",
+                            "cash_machine",
+                            "first_aid",
+                        ],
+                    },
+                    "x": {"type": "integer"},
+                    "y": {"type": "integer"},
+                    "dir": {"type": "integer", "minimum": 0, "maximum": 3},
+                    "price": {"type": "number", "description": "item price in dollars, e.g. 1.5"},
+                },
+            },
+        },
+    },
+}
+
+STALL_TOOL = {
+    "name": "submit_stall_plan",
+    "description": "Submit the stall plan to build, open, and simulate.",
+    "input_schema": STALL_PLAN_SCHEMA,
+}
+
+STALL_VALIDATE_TOOL = {
+    "name": "validate_stall_plan",
+    "description": "Dry-run a stall plan: builds it in the game and reports the first placement "
+    "rejection (with its index) or that every stall placed, WITHOUT spending your round. Same "
+    "payload as submit_stall_plan.",
+    "input_schema": STALL_PLAN_SCHEMA,
+}
+
+# max-vomit: a track program that may also carry stalls. The harness builds
+# the track first, then the stalls around it; a fed rider vomits twice as
+# hard, so the two submit together as one plan.
+VOMIT_PROGRAM_SCHEMA = {
+    "type": "object",
+    "required": ["ride_type", "start", "pieces"],
+    "properties": {
+        **TOOL["input_schema"]["properties"],
+        "stalls": STALL_PLAN_SCHEMA["properties"]["stalls"],
+    },
+}
+
+VOMIT_TOOL = {
+    "name": "submit_track_program",
+    "description": "Submit the coaster track program to build and open to guests, optionally "
+    "with a stall plan built alongside it (stalls place after the track).",
+    "input_schema": VOMIT_PROGRAM_SCHEMA,
+}
+
+VOMIT_VALIDATE_TOOL = {
+    "name": "validate_track_program",
+    "description": "Dry-run a track program (with optional stalls): builds everything in the game "
+    "and reports placement errors with the exact index — stall indices continue past the track "
+    "pieces — or whether the circuit closes, WITHOUT spending your round.",
+    "input_schema": VOMIT_PROGRAM_SCHEMA,
+}
+
 
 # Similarity below this is free; above it the score scales linearly to zero
 # at 1.0 (an exact copy of a stock design).
@@ -333,6 +524,7 @@ class Attempt:
     program: dict
     report: dict
     screenshot: Path | None
+    goal: "Goal"
     # Library tool calls made before this round's submission (library mode).
     lookups: list[dict] = field(default_factory=list)
 
@@ -354,30 +546,26 @@ class Attempt:
         return self.raw_excitement * similarity_multiplier(self.similarity)
 
     @property
-    def summary(self) -> str:
+    def score(self) -> float | None:
+        """The goal's scalar for ranking; None when the attempt produced
+        nothing scoreable (build failed, ride never rated)."""
+        return self.goal.score(self)
+
+    @property
+    def build_failure(self) -> str | None:
         prog = self.report.get("program") or {}
-        if not prog.get("ok"):
-            err = (prog.get("error") or {}).get("message", "unknown error")
-            placed = prog.get("pieces_placed", 0)
-            total = prog.get("pieces_total", 0)
-            idx = (prog.get("error") or {}).get("piece_index")
-            where = f" at piece {idx}" if idx is not None else ""
-            return f"BUILD FAILED{where} ({placed}/{total} placed): {err}"
-        rides = self.report.get("rides", [])
-        if not rides:
-            return "built but no ride data"
-        r = rides[0]
-        text = (
-            f"excitement={r.get('excitement')} intensity={r.get('intensity')} nausea={r.get('nausea')} "
-            f"tested={r.get('tested')} crashed={r.get('crashed')} length={r.get('ride_length')} "
-            f"drops={r.get('num_drops')} airtime={r.get('total_air_time')}"
-        )
-        sim = self.report.get("similarity") or {}
-        if sim:
-            text += f" similarity={sim.get('similarity', 0.0):.2f} (nearest: {sim.get('nearest_design')})"
-        if similarity_multiplier(self.similarity) < 1.0:
-            text += f" -> penalized excitement {self.excitement:.2f}"
-        return text
+        if prog.get("ok"):
+            return None
+        err = (prog.get("error") or {}).get("message", "unknown error")
+        placed = prog.get("pieces_placed", 0)
+        total = prog.get("pieces_total", 0)
+        idx = (prog.get("error") or {}).get("piece_index")
+        where = f" at piece {idx}" if idx is not None else ""
+        return f"BUILD FAILED{where} ({placed}/{total} placed): {err}"
+
+    @property
+    def summary(self) -> str:
+        return self.goal.summary(self)
 
 
 @dataclass
@@ -387,8 +575,8 @@ class Contender:
 
     @property
     def best(self) -> Attempt | None:
-        rated = [a for a in self.attempts if a.excitement > 0]
-        return max(rated, key=lambda a: a.excitement) if rated else None
+        rated = [a for a in self.attempts if a.score is not None]
+        return max(rated, key=lambda a: a.score) if rated else None
 
 
 STATION_PIECES = {"begin_station", "middle_station", "end_station"}
@@ -457,7 +645,9 @@ def render_schematic(trace: list[dict], out_path: Path) -> Path | None:
     return out_path
 
 
-def run_eval(program: dict, scenario: Path, workdir: Path, ticks: int) -> tuple[dict, Path | None]:
+def run_eval(
+    program: dict, scenario: Path, workdir: Path, ticks: int, xray: bool = True
+) -> tuple[dict, Path | None]:
     workdir.mkdir(parents=True, exist_ok=True)
     program_path = workdir / "program.json"
     report_path = workdir / "report.json"
@@ -472,7 +662,12 @@ def run_eval(program: dict, scenario: Path, workdir: Path, ticks: int) -> tuple[
         "--out", str(report_path),
     ]
     if not NO_GRAPHICS:
-        cmd += ["--capture", str(capture_path), "--capture-xray"]
+        cmd += ["--capture", str(capture_path)]
+        # The x-ray view hides terrain so every track piece shows; for stall
+        # goals the normal view is the useful one (paths and guests must stay
+        # visible).
+        if xray:
+            cmd.append("--capture-xray")
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if not report_path.exists():
         return {"program": {"ok": False, "error": {"message": f"eval crashed: {proc.stderr[-500:]}"}}}, None
@@ -518,9 +713,10 @@ def closure_hint(message: str) -> str | None:
     return "; ".join(parts)
 
 
-def validate_program(program: dict, scenario: Path) -> str:
-    """Placement + circuit-closure dry run; a few ticks is enough because both
-    are checked at build time, before any real simulation."""
+def dry_run(program: dict, scenario: Path) -> dict:
+    """Runs a program for a few ticks and returns the report's `program`
+    outcome; placement and circuit closure are checked at build time, before
+    any real simulation."""
     with tempfile.TemporaryDirectory() as d:
         program_path = Path(d) / "program.json"
         report_path = Path(d) / "report.json"
@@ -537,10 +733,21 @@ def validate_program(program: dict, scenario: Path) -> str:
             timeout=300,
         )
         if not report_path.exists():
-            return json.dumps({"ok": False, "error": "eval crashed"})
-        prog = json.loads(report_path.read_text()).get("program", {})
+            return {}
+        return json.loads(report_path.read_text()).get("program", {})
+
+
+def validate_program(
+    program: dict,
+    scenario: Path,
+    ok_note: str = "placement OK and circuit closed; ready to submit",
+) -> str:
+    """Placement + circuit-closure dry run, formatted as a tool result."""
+    prog = dry_run(program, scenario)
+    if not prog:
+        return json.dumps({"ok": False, "error": "eval crashed"})
     if prog.get("ok"):
-        return json.dumps({"ok": True, "note": "placement OK and circuit closed; ready to submit"})
+        return json.dumps({"ok": True, "note": ok_note})
     err = prog.get("error") or {}
     result = {
         "ok": False,
@@ -679,6 +886,17 @@ def prune_history(messages: list[dict]) -> None:
                     block["content"] = json.dumps(payload)
 
 
+def image_block(path: Path) -> dict:
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": base64.b64encode(path.read_bytes()).decode(),
+        },
+    }
+
+
 def feedback_content(attempt: Attempt) -> list[dict]:
     content: list[dict] = [
         {
@@ -686,21 +904,12 @@ def feedback_content(attempt: Attempt) -> list[dict]:
             "text": (
                 f"Round {attempt.round} result: {attempt.summary}\n\n"
                 f"Full report:\n{json.dumps(attempt.report, indent=1)}\n\n"
-                "Revise your design and submit again. Aim for higher excitement (intensity < 10, no crashes)."
+                + attempt.goal.feedback_instruction()
             ),
         }
     ]
     if attempt.screenshot is not None:
-        content.append(
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/png",
-                    "data": base64.b64encode(attempt.screenshot.read_bytes()).decode(),
-                },
-            }
-        )
+        content.append(image_block(attempt.screenshot))
     return content
 
 
@@ -881,6 +1090,430 @@ class OpenAICompat:
                 )
             print(f"  [{model}] no tool call (attempt {attempt + 1}/3), retrying", flush=True)
         raise RuntimeError(f"{model} returned no tool call in 3 attempts despite tool_choice={oa_choice!r}")
+def coaster_summary(attempt: Attempt) -> str:
+    """One-line result for a track-building attempt."""
+    if attempt.build_failure is not None:
+        return attempt.build_failure
+    rides = attempt.report.get("rides", [])
+    if not rides:
+        return "built but no ride data"
+    r = rides[0]
+    text = (
+        f"excitement={r.get('excitement')} intensity={r.get('intensity')} nausea={r.get('nausea')} "
+        f"tested={r.get('tested')} crashed={r.get('crashed')} length={r.get('ride_length')} "
+        f"drops={r.get('num_drops')} airtime={r.get('total_air_time')}"
+    )
+    sim = attempt.report.get("similarity") or {}
+    if sim:
+        text += f" similarity={sim.get('similarity', 0.0):.2f} (nearest: {sim.get('nearest_design')})"
+    if similarity_multiplier(attempt.similarity) < 1.0:
+        text += f" -> penalized excitement {attempt.excitement:.2f}"
+    return text
+
+
+# --- Goal registry ----------------------------------------------------------
+#
+# A goal declares the objective of a run: what the model is prompted to do,
+# which submit/validate tools it gets, how a submission becomes an eval
+# program, and how the report is scored. Goals compose with scenarios (any
+# goal can run on any suitable park) and, for coaster goals, with library
+# mode. run.json records the goal so standings and the site never rank
+# different goals against each other.
+
+
+class BestCoasterGoal:
+    """The original objective: design the highest-excitement coaster."""
+
+    name = "best-coaster"
+    submit_tool = "submit_track_program"
+    validate_tool = "validate_track_program"
+    capture_xray = True
+    supports_library = True
+
+    def __init__(self, args, scenario: Path):
+        self.ride_type = args.ride_type
+        self.scenario = scenario
+        # Filled by main() in library mode; tools/prompt react to it.
+        self.library: list[dict] | None = None
+
+    def setup(self, run_dir: Path) -> None:
+        pass
+
+    def config(self) -> dict:
+        """Goal-specific parameters worth recording in run.json."""
+        return {}
+
+    def system_prompt(self) -> str:
+        prompt = build_system_prompt(self.ride_type, self.scenario)
+        return prompt + (LIBRARY_PROMPT if self.library is not None else "")
+
+    def tools(self) -> list[dict]:
+        return [TOOL, VALIDATE_TOOL] + (LIBRARY_TOOLS if self.library is not None else [])
+
+    def opening_content(self) -> str | list[dict]:
+        ride_name, _ = ride_type_info(self.ride_type)
+        return f"Design your best {ride_name} (ride_type {self.ride_type}). Submit your first track program."
+
+    def validate(self, tool_input: dict) -> str:
+        return validate_program(tool_input, self.scenario)
+
+    def build_program(self, tool_input: dict, model: str, rnd: int) -> tuple[dict | None, str | None]:
+        """Submission -> program dict for the CLI, or a rejection message."""
+        program = tool_input
+        if program.get("ride_type") != self.ride_type:
+            print(
+                f"  [{model}] round {rnd}: submitted ride_type {program.get('ride_type')}, forcing {self.ride_type}",
+                flush=True,
+            )
+            program["ride_type"] = self.ride_type
+        return program, None
+
+    def describe_submission(self, program: dict) -> str:
+        return f"{len(program.get('pieces', []))} pieces submitted"
+
+    def score(self, attempt: Attempt) -> float | None:
+        return attempt.excitement if attempt.raw_excitement > 0 else None
+
+    def summary(self, attempt: Attempt) -> str:
+        return coaster_summary(attempt)
+
+    def feedback_instruction(self) -> str:
+        return "Revise your design and submit again. Aim for higher excitement (intensity < 10, no crashes)."
+
+    def metrics(self, attempt: Attempt) -> dict:
+        return {
+            "excitement": attempt.excitement,
+            "raw_excitement": attempt.raw_excitement,
+            "similarity": attempt.similarity,
+        }
+
+
+class FinishCoasterGoal(BestCoasterGoal):
+    """Circuit closure under a budget: the harness commits a prefix (station,
+    lift, first stretch — no return path) and the model must bring it home.
+    Directly targets the universal failure mode of from-scratch runs."""
+
+    name = "finish-the-coaster"
+    submit_tool = "submit_track_completion"
+    validate_tool = "validate_track_completion"
+
+    DEFAULT_BUDGET = 80
+
+    def __init__(self, args, scenario: Path):
+        super().__init__(args, scenario)
+        self.prefix_path: Path = args.prefix or (
+            REPO / "evals" / "programs" / f"finish_prefix_{self.ride_type}.json"
+        )
+        self.prefix: dict = {}
+        self.budget: int = self.DEFAULT_BUDGET
+        self.end_cursor: dict = {}
+
+    def setup(self, run_dir: Path) -> None:
+        """Loads the committed prefix and dry-runs it: the game is the oracle
+        for both prefix validity and the cursor the model must pick up from."""
+        if not self.prefix_path.exists():
+            raise RuntimeError(
+                f"no prefix program for ride type {self.ride_type}: {self.prefix_path}"
+            )
+        self.prefix = json.loads(self.prefix_path.read_text())
+        self.budget = int(self.prefix.get("completion_budget", self.DEFAULT_BUDGET))
+        prefix_program = {k: self.prefix[k] for k in ("ride_type", "start", "pieces")}
+        outcome = dry_run(prefix_program, self.scenario)
+        placed = outcome.get("pieces_placed", 0)
+        if placed != len(self.prefix["pieces"]):
+            err = (outcome.get("error") or {}).get("message", "no report")
+            raise RuntimeError(
+                f"prefix program failed to build ({placed}/{len(self.prefix['pieces'])} placed): {err}"
+            )
+        # The prefix is deliberately unclosed, so the outcome reports a
+        # closure failure; end_cursor is where the model must continue from.
+        if not outcome.get("end_cursor"):
+            raise RuntimeError("eval CLI reported no end_cursor; rebuild openrct2-cli")
+        self.end_cursor = outcome["end_cursor"]
+
+    def config(self) -> dict:
+        return {
+            "prefix_file": self.prefix_path.name,
+            "prefix_pieces": len(self.prefix.get("pieces", [])),
+            "completion_budget": self.budget,
+            "prefix_end_cursor": self.end_cursor,
+        }
+
+    def system_prompt(self) -> str:
+        _, ride_line = ride_type_info(self.ride_type)
+        start = self.prefix["start"]
+        prompt = (
+            FINISH_SYSTEM_PROMPT.replace("{RIDE_TYPE_LINE}", ride_line)
+            .replace("{PREFIX_JSON}", json.dumps(self.prefix["pieces"]))
+            .replace(
+                "{PREFIX_START}",
+                f"(x={start['x']}, y={start['y']}, dir={start['dir']})",
+            )
+            .replace("{PREFIX_END}", json.dumps(self.end_cursor))
+            .replace("{PREFIX_BUDGET}", str(self.budget))
+            .replace("{MAP_LINE}", scenario_map_line(self.scenario))
+        )
+        return prompt + (LIBRARY_PROMPT if self.library is not None else "")
+
+    def tools(self) -> list[dict]:
+        return [FINISH_TOOL, FINISH_VALIDATE_TOOL] + (
+            LIBRARY_TOOLS if self.library is not None else []
+        )
+
+    def opening_content(self) -> str | list[dict]:
+        ride_name, _ = ride_type_info(self.ride_type)
+        return (
+            f"Finish the {ride_name} (ride_type {self.ride_type}): close the circuit from the "
+            f"prefix's end cursor back to the station, within {self.budget} pieces. "
+            "Submit your first continuation."
+        )
+
+    def merged_program(self, pieces: list) -> dict:
+        return {
+            "ride_type": self.prefix["ride_type"],
+            "start": self.prefix["start"],
+            "pieces": list(self.prefix["pieces"]) + list(pieces),
+            # The committed prefix is the harness's design, not the model's;
+            # the similarity penalty applies to the continuation only.
+            "similarity_skip": len(self.prefix["pieces"]),
+        }
+
+    def over_budget(self, pieces: list) -> str | None:
+        if len(pieces) > self.budget:
+            return (
+                f"continuation uses {len(pieces)} pieces; the budget is {self.budget}. "
+                "Submit a shorter continuation."
+            )
+        return None
+
+    def validate(self, tool_input: dict) -> str:
+        pieces = tool_input.get("pieces") or []
+        if reason := self.over_budget(pieces):
+            return json.dumps({"ok": False, "error": reason})
+        return validate_program(self.merged_program(pieces), self.scenario)
+
+    def build_program(self, tool_input: dict, model: str, rnd: int) -> tuple[dict | None, str | None]:
+        pieces = tool_input.get("pieces") or []
+        if reason := self.over_budget(pieces):
+            return None, reason
+        return self.merged_program(pieces), None
+
+    def describe_submission(self, program: dict) -> str:
+        continuation = len(program.get("pieces", [])) - len(self.prefix.get("pieces", []))
+        return f"{continuation} continuation pieces submitted (budget {self.budget})"
+
+
+class MaxVomitGoal(BestCoasterGoal):
+    """Design the ride whose passengers throw up the most. The coaster is
+    opened to real guests instead of test-run, and the score is the engine's
+    own count of vomit piles added to the ground. Rewards the nausea/intensity
+    trade-off: maximum sickness from a ride guests still agree to board."""
+
+    name = "max-vomit"
+    # Normal park view: paths, guests, and the vomit itself must be visible.
+    capture_xray = False
+
+    def system_prompt(self) -> str:
+        _, ride_line = ride_type_info(self.ride_type)
+        prompt = VOMIT_SYSTEM_PROMPT.replace("{RIDE_TYPE_LINE}", ride_line).replace(
+            "{MAP_LINE}", scenario_map_line(self.scenario)
+        )
+        return prompt + (LIBRARY_PROMPT if self.library is not None else "")
+
+    def tools(self) -> list[dict]:
+        return [VOMIT_TOOL, VOMIT_VALIDATE_TOOL] + (
+            LIBRARY_TOOLS if self.library is not None else []
+        )
+
+    def opening_content(self) -> str | list[dict]:
+        ride_name, _ = ride_type_info(self.ride_type)
+        return (
+            f"Build your most nauseating {ride_name} (ride_type {self.ride_type}). "
+            "It will be opened to the park's guests. Submit your first track program."
+        )
+
+    def build_program(self, tool_input: dict, model: str, rnd: int) -> tuple[dict | None, str | None]:
+        program, rejection = super().build_program(tool_input, model, rnd)
+        if program is not None:
+            # Guests only queue for open rides; testing produces no riders
+            # and therefore no vomit.
+            program["open"] = True
+        return program, rejection
+
+    def describe_submission(self, program: dict) -> str:
+        text = f"{len(program.get('pieces', []))} pieces submitted"
+        if program.get("stalls"):
+            text += f" + {len(program['stalls'])} stalls"
+        return text
+
+    def score(self, attempt: Attempt) -> float | None:
+        """Vomit events (the true cumulative count from the Guest::throwUp
+        hook); pile delta as a fallback for reports from older binaries."""
+        if attempt.build_failure is not None:
+            return None
+        park = attempt.report.get("park") or {}
+        events = park.get("vomit_events")
+        if events is not None:
+            return float(events)
+        delta = park.get("vomit_delta")
+        return float(delta) if delta is not None else None
+
+    def summary(self, attempt: Attempt) -> str:
+        if attempt.build_failure is not None:
+            return attempt.build_failure
+        park = attempt.report.get("park") or {}
+        rides = attempt.report.get("rides", [])
+        r = rides[0] if rides else {}
+        text = (
+            f"vomit_events={park.get('vomit_events')} "
+            f"(piles on ground: {park.get('vomit_count')}) "
+            f"guests={park.get('guests_count')} "
+            f"nausea={r.get('nausea')} intensity={r.get('intensity')} excitement={r.get('excitement')}"
+        )
+        stalls_placed = sum(
+            1 for s in park.get("stalls") or [] if s.get("placed_by_program")
+        )
+        if stalls_placed:
+            text += f" stalls={stalls_placed}"
+        return text
+
+    def feedback_instruction(self) -> str:
+        return (
+            "Revise your design and submit again. More nausea, but keep intensity low enough "
+            "that guests still board — an empty ride produces no vomit."
+        )
+
+    def metrics(self, attempt: Attempt) -> dict:
+        park = attempt.report.get("park") or {}
+        rides = attempt.report.get("rides", [])
+        r = rides[0] if rides else {}
+        return {
+            "vomit_events": park.get("vomit_events"),
+            "vomit_count": park.get("vomit_count"),
+            "vomit_delta": park.get("vomit_delta"),
+            "guests_count": park.get("guests_count"),
+            "nausea": r.get("nausea"),
+            "intensity": r.get("intensity"),
+            "stalls_placed": sum(
+                1 for s in park.get("stalls") or [] if s.get("placed_by_program")
+            ),
+        }
+
+
+class GuestServicesGoal:
+    """Stall economics on a living park: place stalls, set prices, and be
+    scored on stall profit plus the park-rating change over the simulation."""
+
+    name = "guest-services"
+    submit_tool = "submit_stall_plan"
+    validate_tool = "validate_stall_plan"
+    capture_xray = False
+    supports_library = False
+
+    def __init__(self, args, scenario: Path):
+        self.scenario = scenario
+        self.library: list[dict] | None = None
+        self.baseline_report: dict = {}
+        self.baseline_shot: Path | None = None
+
+    def setup(self, run_dir: Path) -> None:
+        """Captures the untouched park once: opening screenshot + baseline
+        counters every contender starts from."""
+        report, shot = run_eval(
+            {"stalls": []}, self.scenario, run_dir / "baseline", ticks=5, xray=False
+        )
+        park = report.get("park")
+        if not park:
+            raise RuntimeError(
+                "scenario produced no park metrics; rebuild openrct2-cli"
+            )
+        self.baseline_report = report
+        self.baseline_shot = shot
+
+    def config(self) -> dict:
+        park = self.baseline_report.get("park") or {}
+        return {
+            "baseline_park_rating": park.get("park_rating"),
+            "baseline_guests": park.get("guests_count"),
+        }
+
+    def system_prompt(self) -> str:
+        return GUEST_SYSTEM_PROMPT
+
+    def tools(self) -> list[dict]:
+        return [STALL_TOOL, STALL_VALIDATE_TOOL]
+
+    def opening_content(self) -> str | list[dict]:
+        park = self.baseline_report.get("park") or {}
+        text = (
+            f"The park is live: rating {park.get('park_rating')}, "
+            f"{park.get('guests_count')} guests in the park, "
+            f"{len(park.get('stalls') or [])} pre-existing stall(s). "
+            "Study the screenshot for paths and guest clusters, then submit your first stall plan."
+        )
+        content: list[dict] = [{"type": "text", "text": text}]
+        if self.baseline_shot is not None:
+            content.append(image_block(self.baseline_shot))
+        return content
+
+    def validate(self, tool_input: dict) -> str:
+        return validate_program(
+            tool_input, self.scenario, ok_note="every stall placed OK; ready to submit"
+        )
+
+    def build_program(self, tool_input: dict, model: str, rnd: int) -> tuple[dict | None, str | None]:
+        return {"stalls": tool_input.get("stalls") or []}, None
+
+    def describe_submission(self, program: dict) -> str:
+        return f"{len(program.get('stalls', []))} stalls submitted"
+
+    def score(self, attempt: Attempt) -> float | None:
+        park = attempt.report.get("park") or {}
+        profit = park.get("stall_profit")
+        delta = park.get("park_rating_delta")
+        if profit is None and delta is None:
+            return None
+        return (profit or 0.0) + float(delta or 0)
+
+    def summary(self, attempt: Attempt) -> str:
+        if attempt.build_failure is not None:
+            return attempt.build_failure
+        park = attempt.report.get("park") or {}
+        profit = park.get("stall_profit") or 0.0
+        placed = sum(1 for s in park.get("stalls") or [] if s.get("placed_by_program"))
+        text = (
+            f"stalls={placed} profit=${profit:.2f} "
+            f"park_rating={park.get('park_rating')} ({(park.get('park_rating_delta') or 0):+d}) "
+            f"guests={park.get('guests_count')}"
+        )
+        if (score := self.score(attempt)) is not None:
+            text += f" score={score:.2f}"
+        return text
+
+    def feedback_instruction(self) -> str:
+        return (
+            "Revise your stall plan and submit again. Aim for higher combined stall profit "
+            "and park rating."
+        )
+
+    def metrics(self, attempt: Attempt) -> dict:
+        park = attempt.report.get("park") or {}
+        return {
+            "stall_profit": park.get("stall_profit"),
+            "park_rating": park.get("park_rating"),
+            "park_rating_delta": park.get("park_rating_delta"),
+            "guests_count": park.get("guests_count"),
+        }
+
+
+Goal = BestCoasterGoal | FinishCoasterGoal | MaxVomitGoal | GuestServicesGoal
+
+GOALS: dict[str, type] = {
+    BestCoasterGoal.name: BestCoasterGoal,
+    FinishCoasterGoal.name: FinishCoasterGoal,
+    MaxVomitGoal.name: MaxVomitGoal,
+    GuestServicesGoal.name: GuestServicesGoal,
+}
 
 
 def compete(
@@ -890,8 +1523,7 @@ def compete(
     scenario: Path,
     run_dir: Path,
     ticks: int,
-    ride_type: int,
-    library: list[dict] | None = None,
+    goal: Goal,
     max_tokens: int = 8000,
     scenario_label: str | None = None,
 ) -> Contender:
@@ -901,19 +1533,18 @@ def compete(
     model_dir = run_dir / model.replace("/", "_")
     rounds_base = model_dir / scenario_label if scenario_label else model_dir
     tag = f"{model} @ {scenario_label}" if scenario_label else model
-    ride_name, _ = ride_type_info(ride_type)
-    system_prompt = build_system_prompt(ride_type, scenario) + (LIBRARY_PROMPT if library is not None else "")
-    tools = [TOOL, VALIDATE_TOOL] + (LIBRARY_TOOLS if library is not None else [])
-    messages: list[dict] = [
-        {
-            "role": "user",
-            "content": f"Design your best {ride_name} (ride_type {ride_type}). Submit your first track program.",
-        }
-    ]
+    # Each scenario park gets its own goal view (prompt map line, validation
+    # target); a shallow copy keeps shared state (library, prefix) intact.
+    if scenario != goal.scenario:
+        goal = copy.copy(goal)
+        goal.scenario = scenario
+    system_prompt = goal.system_prompt()
+    tools = goal.tools()
+    messages: list[dict] = [{"role": "user", "content": goal.opening_content()}]
     for rnd in range(1, rounds + 1):
-        # In library mode the model may browse designs first; the last step
-        # forces a submission so every round produces an attempt.
-        program = None
+        # The model may validate (and, in library mode, browse designs) first;
+        # the last step forces a submission so every round produces an attempt.
+        submission = None
         tool_use = None
         lookups: list[dict] = []
         round_usage = {"input_tokens": 0, "output_tokens": 0}
@@ -929,22 +1560,22 @@ def compete(
                 messages=messages,
                 tools=tools,
                 tool_choice=(
-                    {"type": "tool", "name": "submit_track_program"} if force_submit else {"type": "any"}
+                    {"type": "tool", "name": goal.submit_tool} if force_submit else {"type": "any"}
                 ),
             )
             round_usage["input_tokens"] += response.usage.input_tokens
             round_usage["output_tokens"] += response.usage.output_tokens
             tool_use = next(b for b in response.content if b.type == "tool_use")
             messages.append({"role": "assistant", "content": response.content})
-            if tool_use.name == "submit_track_program":
-                program = tool_use.input
+            if tool_use.name == goal.submit_tool:
+                submission = tool_use.input
                 break
-            if tool_use.name == "validate_track_program":
-                result = validate_program(tool_use.input, scenario)
+            if tool_use.name == goal.validate_tool:
+                result = goal.validate(tool_use.input)
                 print(f"  [{tag}] round {rnd}: validate -> {result[:120]}", flush=True)
             else:
                 print(f"  [{tag}] round {rnd}: {tool_use.name}({json.dumps(tool_use.input)})", flush=True)
-                result, lookup = library_tool_result(tool_use.name, tool_use.input, library or [])
+                result, lookup = library_tool_result(tool_use.name, tool_use.input, goal.library or [])
                 lookups.append(lookup)
             if step + 1 >= MAX_LOOKUPS_PER_ROUND:
                 # Named tool_choice is advisory on some stacks, so forcing has
@@ -952,7 +1583,7 @@ def compete(
                 # validating forever instead of ever submitting.
                 result += (
                     "\n\nVALIDATION BUDGET EXHAUSTED: you must now call "
-                    "submit_track_program with your best current program. Do not "
+                    f"{goal.submit_tool} with your best current submission. Do not "
                     "call any other tool."
                 )
             messages.append(
@@ -961,20 +1592,25 @@ def compete(
                     "content": [{"type": "tool_result", "tool_use_id": tool_use.id, "content": result}],
                 }
             )
-        if program is None or tool_use is None:
+        if submission is None or tool_use is None:
             # Three forced-submit attempts all returned something else.
-            raise RuntimeError(f"{model} never submitted a program in round {rnd}")
-        if program.get("ride_type") != ride_type:
-            print(
-                f"  [{tag}] round {rnd}: submitted ride_type {program.get('ride_type')}, forcing {ride_type}",
-                flush=True,
-            )
-            program["ride_type"] = ride_type
-        print(f"  [{tag}] round {rnd}: {len(program.get('pieces', []))} pieces submitted", flush=True)
+            raise RuntimeError(f"{tag} never submitted in round {rnd}")
 
+        program, rejection = goal.build_program(submission, tag, rnd)
         round_dir = rounds_base / f"round_{rnd}"
-        report, shot = run_eval(program, scenario, round_dir, ticks)
-        attempt = Attempt(round=rnd, program=program, report=report, screenshot=shot, lookups=lookups)
+        if program is None:
+            # Rejected before reaching the game (e.g. over the piece budget):
+            # feed the reason back as a failed attempt without running an eval.
+            round_dir.mkdir(parents=True, exist_ok=True)
+            report = {"program": {"ok": False, "error": {"message": rejection}}}
+            shot = None
+            program = dict(submission)
+        else:
+            print(f"  [{tag}] round {rnd}: {goal.describe_submission(program)}", flush=True)
+            report, shot = run_eval(program, scenario, round_dir, ticks, xray=goal.capture_xray)
+        attempt = Attempt(
+            round=rnd, program=program, report=report, screenshot=shot, goal=goal, lookups=lookups
+        )
         contender.attempts.append(attempt)
         if lookups:
             (round_dir / "lookups.json").write_text(json.dumps(lookups, indent=2))
@@ -999,10 +1635,22 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--models", nargs="+", default=["claude-fable-5", "claude-sonnet-5"])
     parser.add_argument(
+        "--goal",
+        choices=sorted(GOALS),
+        default=BestCoasterGoal.name,
+        help="eval objective for the run (recorded in run.json; scenario x goal compose)",
+    )
+    parser.add_argument(
         "--mode",
         choices=["design", "library"],
         default="design",
         help="design = from scratch; library = with track design library search (retrieval eval)",
+    )
+    parser.add_argument(
+        "--prefix",
+        type=Path,
+        help="finish-the-coaster only: prefix program JSON "
+        "(default: evals/programs/finish_prefix_<ride_type>.json)",
     )
     parser.add_argument("--rounds", type=int, default=6)
     parser.add_argument(
@@ -1106,23 +1754,40 @@ def main() -> int:
         print(f"error: scenario not found: {args.scenario}", file=sys.stderr)
         return 1
 
+    goal = GOALS[args.goal](args, args.scenario)
+    if args.mode == "library" and not goal.supports_library:
+        print(f"error: goal {goal.name} does not compose with library mode", file=sys.stderr)
+        return 1
+    if args.scenarios and goal.name != BestCoasterGoal.name:
+        # Generated parks have no guests (guest goals) and no per-park prefix
+        # dry-run (finish); wire those up before opening the combination.
+        print("error: --scenarios currently composes with the best-coaster goal only", file=sys.stderr)
+        return 1
+
     suffix = args.name if args.name else time.strftime("%H%M%S")
     run_dir = REPO / "evals" / "runs" / f"{time.strftime('%Y%m%d')}-{suffix}"
     run_dir.mkdir(parents=True)
     global FAILED_CALL_DIR
     FAILED_CALL_DIR = run_dir
-    print(f"run dir: {run_dir} (mode: {args.mode})")
+    print(f"run dir: {run_dir} (goal: {goal.name}, mode: {args.mode})")
 
-    library = None
+    try:
+        goal.setup(run_dir)
+    except RuntimeError as e:
+        print(f"error: goal setup failed: {e}", file=sys.stderr)
+        return 1
+
     if args.mode == "library":
         library_scenario = scenarios[0][1] if scenarios else args.scenario
-        library = dump_library(library_scenario, run_dir)
-        print(f"track design library: {len(library)} designs")
+        goal.library = dump_library(library_scenario, run_dir)
+        print(f"track design library: {len(goal.library)} designs")
         ensure_library_previews(library_scenario)
 
     (run_dir / "run.json").write_text(
         json.dumps(
             {
+                "goal": goal.name,
+                "goal_config": goal.config(),
                 "mode": args.mode,
                 "harness": "driver-api",
                 "models": args.models,
@@ -1158,28 +1823,36 @@ def main() -> int:
     else:
         client = anthropic.Anthropic()
     if scenarios:
-        return run_multi_scenario(client, args, scenarios, run_dir, library)
+        return run_multi_scenario(client, args, scenarios, run_dir, goal)
 
     contenders = [
-        compete(client, model, args.rounds, args.scenario, run_dir, args.ticks, args.ride_type, library, args.max_tokens)
+        compete(client, model, args.rounds, args.scenario, run_dir, args.ticks, goal, args.max_tokens)
         for model in args.models
     ]
 
     print("\n=== FINAL STANDINGS ===")
-    ranked = sorted(contenders, key=lambda c: c.best.excitement if c.best else 0.0, reverse=True)
+    ranked = sorted(
+        contenders,
+        key=lambda c: c.best.score if c.best and c.best.score is not None else float("-inf"),
+        reverse=True,
+    )
     for place, contender in enumerate(ranked, 1):
         best = contender.best
         if best is None:
-            print(f"{place}. {contender.model}: no successful coaster")
+            print(f"{place}. {contender.model}: no scoreable attempt")
         else:
-            print(f"{place}. {contender.model}: excitement {best.excitement:.2f} (round {best.round}) — {best.summary}")
+            print(f"{place}. {contender.model}: score {best.score:.2f} (round {best.round}) — {best.summary}")
     (run_dir / "standings.json").write_text(
         json.dumps(
             {
+                "goal": goal.name,
                 "mode": args.mode,
                 "standings": [
                     {
                         "model": c.model,
+                        "best_score": c.best.score if c.best else None,
+                        "best_metrics": goal.metrics(c.best) if c.best else None,
+                        # Kept for older tooling; meaningful for coaster goals only.
                         "best_excitement": c.best.excitement if c.best else None,
                         "best_raw_excitement": c.best.raw_excitement if c.best else None,
                         "best_similarity": c.best.similarity if c.best else None,
@@ -1201,7 +1874,7 @@ def run_multi_scenario(
     args,
     scenarios: list[tuple[str, Path]],
     run_dir: Path,
-    library: list[dict] | None,
+    goal: "Goal",
 ) -> int:
     """Fans (model, scenario) competitions out over a thread pool and writes
     aggregate standings: per-scenario best, then mean/median across scenarios.
@@ -1217,7 +1890,7 @@ def run_multi_scenario(
     def one(model: str, label: str, park: Path) -> Contender:
         try:
             return compete(
-                client, model, args.rounds, park, run_dir, args.ticks, args.ride_type, library, args.max_tokens, label
+                client, model, args.rounds, park, run_dir, args.ticks, goal, args.max_tokens, label
             )
         except Exception as e:
             print(f"  [{model} @ {label}] FAILED: {e}", file=sys.stderr, flush=True)
@@ -1277,6 +1950,7 @@ def run_multi_scenario(
     (run_dir / "standings.json").write_text(
         json.dumps(
             {
+                "goal": goal.name,
                 "mode": args.mode,
                 "scenarios": [label for label, _ in scenarios],
                 "standings": standings,

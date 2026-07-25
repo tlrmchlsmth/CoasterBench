@@ -66,6 +66,36 @@ pub struct RideDetail {
     pub num_inversions: u8,
 }
 
+/// Whole-park counters, for the guest-services and max-vomit goals' scoring.
+/// Money fields are the game's fixed-point money64: 10 units = $1.00.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ParkStats {
+    /// Park rating, 0-999 as shown in game.
+    pub rating: u16,
+    pub guests: u32,
+    pub cash: i64,
+    /// Vomit piles currently on the ground (Litter entities of type
+    /// vomit/vomitAlt). Undercounts cumulative vomiting: handymen sweep
+    /// piles, and at 500 litter entities the engine recycles them.
+    pub vomit: u32,
+    /// Guest vomit EVENTS since process start (the Guest::throwUp hook), the
+    /// true integral the max-vomit goal scores on: immune to sweeping, the
+    /// litter cap, and unlitterable ground. Diff two snapshots for a period.
+    pub vomit_events: u64,
+}
+
+/// Counters for one stall (stalls never get ratings; profit is the signal).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StallDetail {
+    /// Lifetime profit (income minus running costs), money64.
+    pub profit: i64,
+    pub total_customers: u32,
+    /// Primary item price, money64.
+    pub price: i64,
+}
+
 /// Tile-space bounding box of all track elements in the park, plus the world-z
 /// range. Filled by `orct2_host_track_bounds`; found=false when no track exists.
 #[repr(C)]
@@ -147,6 +177,25 @@ unsafe extern "C" {
     fn orct2_host_track_library_json() -> *mut c_char;
     fn orct2_host_string_free(s: *mut c_char);
     fn orct2_host_track_mirror(track_type: u16) -> u16;
+    fn orct2_host_park_stats(out: *mut ParkStats) -> bool;
+    fn orct2_host_stall_place(
+        ride_type: u16,
+        tile_x: i32,
+        tile_y: i32,
+        direction: u8,
+        price: i64,
+        out_ride_id: *mut u16,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> bool;
+    fn orct2_host_ride_set_price(
+        ride_id: u16,
+        price: i64,
+        primary: bool,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> bool;
+    fn orct2_host_stall_detail(ride_id: u16, out: *mut StallDetail) -> bool;
 }
 
 #[cfg(test)]
@@ -375,6 +424,59 @@ pub fn track_mirror(track_type: u16) -> u16 {
     unsafe { orct2_host_track_mirror(track_type) }
 }
 
+/// Park rating, guest count, and cash. None only outside a loaded park.
+pub fn park_stats() -> Option<ParkStats> {
+    let mut stats = ParkStats::default();
+    unsafe { orct2_host_park_stats(&mut stats) }.then_some(stats)
+}
+
+/// Creates a stall of `ride_type` on the tile, facing `direction`, sets its
+/// primary price (`price` in money64 units; negative keeps the default), and
+/// opens it. The C++ side demolishes the half-built ride on any failure.
+pub fn stall_place(
+    ride_type: u16,
+    tile_x: i32,
+    tile_y: i32,
+    direction: u8,
+    price: i64,
+) -> Result<u16, String> {
+    let mut id: u16 = 0;
+    let mut err = err_buf();
+    if unsafe {
+        orct2_host_stall_place(
+            ride_type,
+            tile_x,
+            tile_y,
+            direction,
+            price,
+            &mut id,
+            err.as_mut_ptr(),
+            ERR_BUF_LEN,
+        )
+    } {
+        Ok(id)
+    } else {
+        Err(err_to_string(&err))
+    }
+}
+
+/// Sets a ride's primary (or secondary) price, money64 units.
+pub fn ride_set_price(ride_id: u16, price: i64, primary: bool) -> Result<(), String> {
+    let mut err = err_buf();
+    if unsafe { orct2_host_ride_set_price(ride_id, price, primary, err.as_mut_ptr(), ERR_BUF_LEN) }
+    {
+        Ok(())
+    } else {
+        Err(err_to_string(&err))
+    }
+}
+
+/// Profit/customers/price counters for one stall (or any ride).
+pub fn stall_detail(ride_id: u16) -> Option<StallDetail> {
+    let mut detail = StallDetail::default();
+    unsafe { orct2_host_stall_detail(ride_id, &mut detail) }.then_some(detail)
+}
+
 // Link stubs for `cargo test`: the C++ host only exists inside the game
 // binary, so the unit-test binary needs these symbols to link. Unit tests
 // cover pure logic only (parsing, protocol, formatting); anything that
@@ -382,6 +484,8 @@ pub fn track_mirror(track_type: u16) -> u16 {
 #[cfg(test)]
 mod test_stubs {
     #![allow(clippy::missing_safety_doc)]
+    // Stub signatures mirror the C ABI exactly, arg count included.
+    #![allow(clippy::too_many_arguments)]
     use std::os::raw::c_char;
 
     use crate::host::{RideDetail, RideStats, TrackCursor};
@@ -482,5 +586,32 @@ mod test_stubs {
     pub unsafe fn orct2_host_string_free(_s: *mut c_char) {}
     pub unsafe fn orct2_host_track_mirror(t: u16) -> u16 {
         t
+    }
+    pub unsafe fn orct2_host_park_stats(_o: *mut crate::host::ParkStats) -> bool {
+        false
+    }
+    pub unsafe fn orct2_host_stall_place(
+        _t: u16,
+        _x: i32,
+        _y: i32,
+        _d: u8,
+        _p: i64,
+        _o: *mut u16,
+        _e: *mut c_char,
+        _l: usize,
+    ) -> bool {
+        false
+    }
+    pub unsafe fn orct2_host_ride_set_price(
+        _r: u16,
+        _p: i64,
+        _pr: bool,
+        _e: *mut c_char,
+        _l: usize,
+    ) -> bool {
+        false
+    }
+    pub unsafe fn orct2_host_stall_detail(_r: u16, _o: *mut crate::host::StallDetail) -> bool {
+        false
     }
 }

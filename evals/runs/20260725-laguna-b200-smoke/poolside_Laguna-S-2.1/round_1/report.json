@@ -1,0 +1,912 @@
+{
+  "program": {
+    "ok": false,
+    "ride_id": 100,
+    "pieces_placed": 72,
+    "pieces_total": 89,
+    "total_cost": 34108,
+    "error": {
+      "piece_index": 72,
+      "piece": "flat",
+      "message": "piece 'flat' rejected at cursor (x=0, y=90, z=112, dir=0): Off edge of map!"
+    },
+    "end_cursor": {
+      "x": 0,
+      "y": 90,
+      "z": 112,
+      "dir": 0,
+      "bank": 0,
+      "slope": 0
+    },
+    "trace": [
+      {
+        "piece": "start",
+        "chain": false,
+        "x": 50,
+        "y": 60,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "begin_station",
+        "chain": false,
+        "x": 49,
+        "y": 60,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "middle_station",
+        "chain": false,
+        "x": 48,
+        "y": 60,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "end_station",
+        "chain": false,
+        "x": 47,
+        "y": 60,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat_to_up_25",
+        "chain": false,
+        "x": 46,
+        "y": 60,
+        "z": 120,
+        "dir": 0
+      },
+      {
+        "piece": "up_25",
+        "chain": true,
+        "x": 45,
+        "y": 60,
+        "z": 136,
+        "dir": 0
+      },
+      {
+        "piece": "up_25",
+        "chain": true,
+        "x": 44,
+        "y": 60,
+        "z": 152,
+        "dir": 0
+      },
+      {
+        "piece": "up_25",
+        "chain": true,
+        "x": 43,
+        "y": 60,
+        "z": 168,
+        "dir": 0
+      },
+      {
+        "piece": "up_25",
+        "chain": true,
+        "x": 42,
+        "y": 60,
+        "z": 184,
+        "dir": 0
+      },
+      {
+        "piece": "up_25",
+        "chain": true,
+        "x": 41,
+        "y": 60,
+        "z": 200,
+        "dir": 0
+      },
+      {
+        "piece": "up_25",
+        "chain": true,
+        "x": 40,
+        "y": 60,
+        "z": 216,
+        "dir": 0
+      },
+      {
+        "piece": "up_25_to_flat",
+        "chain": false,
+        "x": 39,
+        "y": 60,
+        "z": 224,
+        "dir": 0
+      },
+      {
+        "piece": "right_turn_5",
+        "chain": false,
+        "x": 37,
+        "y": 63,
+        "z": 224,
+        "dir": 1
+      },
+      {
+        "piece": "flat_to_down_25",
+        "chain": false,
+        "x": 37,
+        "y": 64,
+        "z": 216,
+        "dir": 1
+      },
+      {
+        "piece": "down_25",
+        "chain": true,
+        "x": 37,
+        "y": 65,
+        "z": 200,
+        "dir": 1
+      },
+      {
+        "piece": "down_25",
+        "chain": false,
+        "x": 37,
+        "y": 66,
+        "z": 184,
+        "dir": 1
+      },
+      {
+        "piece": "down_25",
+        "chain": false,
+        "x": 37,
+        "y": 67,
+        "z": 168,
+        "dir": 1
+      },
+      {
+        "piece": "down_25",
+        "chain": false,
+        "x": 37,
+        "y": 68,
+        "z": 152,
+        "dir": 1
+      },
+      {
+        "piece": "down_25",
+        "chain": false,
+        "x": 37,
+        "y": 69,
+        "z": 136,
+        "dir": 1
+      },
+      {
+        "piece": "down_25",
+        "chain": false,
+        "x": 37,
+        "y": 70,
+        "z": 120,
+        "dir": 1
+      },
+      {
+        "piece": "down_25_to_flat",
+        "chain": false,
+        "x": 37,
+        "y": 71,
+        "z": 112,
+        "dir": 1
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 37,
+        "y": 72,
+        "z": 112,
+        "dir": 1
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 37,
+        "y": 73,
+        "z": 112,
+        "dir": 1
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 37,
+        "y": 74,
+        "z": 112,
+        "dir": 1
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 37,
+        "y": 75,
+        "z": 112,
+        "dir": 1
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 37,
+        "y": 76,
+        "z": 112,
+        "dir": 1
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 37,
+        "y": 77,
+        "z": 112,
+        "dir": 1
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 37,
+        "y": 78,
+        "z": 112,
+        "dir": 1
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 37,
+        "y": 79,
+        "z": 112,
+        "dir": 1
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 37,
+        "y": 80,
+        "z": 112,
+        "dir": 1
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 37,
+        "y": 81,
+        "z": 112,
+        "dir": 1
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 37,
+        "y": 82,
+        "z": 112,
+        "dir": 1
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 37,
+        "y": 83,
+        "z": 112,
+        "dir": 1
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 37,
+        "y": 84,
+        "z": 112,
+        "dir": 1
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 37,
+        "y": 85,
+        "z": 112,
+        "dir": 1
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 37,
+        "y": 86,
+        "z": 112,
+        "dir": 1
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 37,
+        "y": 87,
+        "z": 112,
+        "dir": 1
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 37,
+        "y": 88,
+        "z": 112,
+        "dir": 1
+      },
+      {
+        "piece": "left_turn_5",
+        "chain": false,
+        "x": 34,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 33,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 32,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 31,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 30,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 29,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 28,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 27,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 26,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 25,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 24,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 23,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 22,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 21,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 20,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 19,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 18,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 17,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 16,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 15,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 14,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 13,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 12,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 11,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 10,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 9,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 8,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 7,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 6,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 5,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 4,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 3,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 2,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 1,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      },
+      {
+        "piece": "flat",
+        "chain": false,
+        "x": 0,
+        "y": 90,
+        "z": 112,
+        "dir": 0
+      }
+    ]
+  },
+  "bounds": {
+    "min_tile_x": 1,
+    "min_tile_y": 60,
+    "max_tile_x": 254,
+    "max_tile_y": 254,
+    "min_z": 112,
+    "max_z": 1136
+  },
+  "rides": [
+    {
+      "id": 100,
+      "ride_type": 52,
+      "status": "closed",
+      "tested": false,
+      "crashed": false,
+      "excitement": null,
+      "intensity": null,
+      "nausea": null,
+      "max_speed": 0,
+      "average_speed": 0,
+      "ride_length": 0,
+      "max_positive_g": 0.0,
+      "max_negative_g": 0.0,
+      "max_lateral_g": 0.0,
+      "total_air_time": 0,
+      "num_drops": 0,
+      "highest_drop": 0,
+      "num_inversions": 0
+    }
+  ],
+  "park": {
+    "park_rating": 999,
+    "park_rating_start": 999,
+    "park_rating_delta": 0,
+    "guests_count": 1920,
+    "vomit_count": 10,
+    "vomit_delta": 4,
+    "vomit_events": 111,
+    "stall_profit": null,
+    "stalls": [
+      {
+        "id": 71,
+        "ride_type": 35,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -242.0,
+        "total_customers": 292
+      },
+      {
+        "id": 72,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -12.9,
+        "total_customers": 43
+      },
+      {
+        "id": 73,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -28.5,
+        "total_customers": 57
+      },
+      {
+        "id": 74,
+        "ride_type": 32,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -8.1,
+        "total_customers": 27
+      },
+      {
+        "id": 75,
+        "ride_type": 48,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 3
+      },
+      {
+        "id": 76,
+        "ride_type": 30,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -24.9,
+        "total_customers": 83
+      },
+      {
+        "id": 77,
+        "ride_type": 48,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 0
+      },
+      {
+        "id": 78,
+        "ride_type": 32,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -75.0,
+        "total_customers": 250
+      },
+      {
+        "id": 79,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -49.9,
+        "total_customers": 102
+      },
+      {
+        "id": 80,
+        "ride_type": 35,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -256.6,
+        "total_customers": 248
+      },
+      {
+        "id": 81,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -49.5,
+        "total_customers": 99
+      },
+      {
+        "id": 82,
+        "ride_type": 36,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 148
+      },
+      {
+        "id": 83,
+        "ride_type": 36,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 44
+      },
+      {
+        "id": 84,
+        "ride_type": 36,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 124
+      },
+      {
+        "id": 85,
+        "ride_type": 36,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 41
+      },
+      {
+        "id": 86,
+        "ride_type": 45,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 0
+      },
+      {
+        "id": 87,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -47.5,
+        "total_customers": 95
+      },
+      {
+        "id": 88,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -4.0,
+        "total_customers": 8
+      },
+      {
+        "id": 89,
+        "ride_type": 30,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -1.8,
+        "total_customers": 6
+      },
+      {
+        "id": 90,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -2.0,
+        "total_customers": 4
+      },
+      {
+        "id": 91,
+        "ride_type": 32,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -2.4,
+        "total_customers": 8
+      },
+      {
+        "id": 92,
+        "ride_type": 36,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 11
+      },
+      {
+        "id": 93,
+        "ride_type": 48,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 11
+      },
+      {
+        "id": 94,
+        "ride_type": 48,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 2
+      },
+      {
+        "id": 95,
+        "ride_type": 48,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 26
+      },
+      {
+        "id": 96,
+        "ride_type": 28,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -84.0,
+        "total_customers": 168
+      },
+      {
+        "id": 97,
+        "ride_type": 30,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -41.4,
+        "total_customers": 138
+      },
+      {
+        "id": 98,
+        "ride_type": 35,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": -819.7,
+        "total_customers": 768
+      },
+      {
+        "id": 99,
+        "ride_type": 36,
+        "status": "open",
+        "placed_by_program": false,
+        "price": 0.0,
+        "profit": 0.0,
+        "total_customers": 98
+      }
+    ]
+  },
+  "similarity": null
+}

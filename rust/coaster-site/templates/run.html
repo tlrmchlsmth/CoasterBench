@@ -20,14 +20,13 @@
         <td class="dim">{{ row.similarity }}</td>
         <td>{{ row.best_round }}</td>
         {%- when None %}
-        <td colspan="5" class="fail">no successful coaster</td>
+        <td colspan="5" class="fail">no scoreable round</td>
         {%- endmatch %}
         <td class="dim">{{ row.usage }}</td>
       </tr>
       {%- endfor %}
     </table>
-    <p class="dim footnote">score = excitement, scaled down when similarity to a stock library
-    design exceeds {{ grace }} (an exact or mirrored copy scores 0)</p>
+    <p class="dim footnote">{{ score_note }}</p>
   </div>
 </div>
 

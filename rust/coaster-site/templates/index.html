@@ -16,17 +16,22 @@ flowchart LR
     an impossible curve or an open circuit fails as it would in-game. Intensity above 10 suppresses
     excitement, a crash disqualifies the ride, and designs close to the stock library scale toward
     zero. Ratings come from the game, not from a model. Modes: {% for (mode, tagline) in mode_taglines %}{% if !loop.first %} {% endif %}<b>{{ mode }}</b> — {{ tagline }}.{% endfor %}</p>
+    {%- if sections.len() > 1 %}
+    <p>Goals measure different things and are never ranked against each other:
+    {% for section in sections %}{% if !loop.first %} {% endif %}<b>{{ section.goal }}</b>{% endfor %}
+    each get their own leaderboard below.</p>
+    {%- endif %}
   </div>
 </details>
 
 <div class="window">
-  <div class="titlebar"><span>{% if rows.is_empty() %}No runs yet{% else %}All runs{% endif %}</span>
+  <div class="titlebar"><span>{% if total_rows == 0 %}No runs yet{% else %}All runs{% endif %}</span>
     <span class="titlebar-links">
-    {%- if rows.len() >= 2 %}<a class="titlebar-link" href="compare.html">head to head &rarr;</a>{% endif %}
+    {%- if total_rows >= 2 %}<a class="titlebar-link" href="compare.html">head to head &rarr;</a>{% endif %}
     {%- if have_previews %}<a class="titlebar-link" href="library.html">track design library &rarr;</a>{% endif %}
     </span></div>
   <div class="body">
-  {%- if rows.is_empty() %}
+  {%- if total_rows == 0 %}
     <p>Run <code>uv run evals/driver.py</code> to generate one.</p>
   {%- else %}
     <div class="facets">
@@ -39,6 +44,10 @@ flowchart LR
       </span>
     {%- endfor %}
     </div>
+    {%- for section in sections %}
+    {%- if sections.len() > 1 %}
+    <p class="goal-heading"><b>{{ section.goal }}</b> <span class="dim">— {{ section.tagline }}</span></p>
+    {%- endif %}
     <table class="run-table">
       <thead><tr>
         <th></th>
@@ -50,16 +59,17 @@ flowchart LR
         <th>tokens / cost</th>
       </tr></thead>
       <tbody>
-      {%- for row in rows %}
+      {%- for row in section.rows %}
         <tr class="{% if row.is_winner %}winner{% endif %}"
-            data-run="{{ row.run_name }}" data-mode="{{ row.mode }}" data-coaster="{{ row.coaster }}"
-            data-harness="{{ row.harness }}" data-parks="{{ row.parks }}" data-model="{{ row.model }}"
+            data-run="{{ row.run_name }}" data-goal="{{ row.goal }}" data-mode="{{ row.mode }}"
+            data-coaster="{{ row.coaster }}" data-parks="{{ row.parks }}"
+            data-harness="{{ row.harness }}" data-model="{{ row.model }}"
             data-score="{{ row.sort_score }}" data-intensity="{{ row.sort_intensity }}"
             data-nausea="{{ row.sort_nausea }}">
           <td>
           {%- match row.thumb %}
           {%- when Some(thumb) %}
-            <a href="{{ row.model_href }}"><img class="run-thumb" src="{{ thumb }}" alt="best coaster of {{ row.model }} in {{ row.run_name }}" loading="lazy"></a>
+            <a href="{{ row.model_href }}"><img class="run-thumb" src="{{ thumb }}" alt="best result of {{ row.model }} in {{ row.run_name }}" loading="lazy"></a>
           {%- when None %}
             <div class="no-preview">no image</div>
           {%- endmatch %}
@@ -73,13 +83,14 @@ flowchart LR
           <td><span class="rating-intensity">{{ row.intensity }}</span> <span class="dim">/</span>
               <span class="rating-nausea">{{ row.nausea }}</span></td>
           {%- when None %}
-          <td colspan="2" class="fail">no successful coaster</td>
+          <td colspan="2" class="fail">no scoreable round</td>
           {%- endmatch %}
           <td class="dim">{{ row.usage }}</td>
         </tr>
       {%- endfor %}
       </tbody>
     </table>
+    {%- endfor %}
     {%- if !skipped.is_empty() %}
     <p class="dim footnote">not shown, incomplete or still running:
     {% for run in skipped %}{% if !loop.first %}, {% endif %}{{ run }}{% endfor %}</p>

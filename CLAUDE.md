@@ -134,6 +134,30 @@ Non-bundled binaries look for `data/` next to the exe. One-time setup:
   session, so the MCP endpoint is per contender. Model input modalities come
   from the OpenRouter catalogue and are recorded in run.json; a text-only
   model gets `?modalities=text` and a prompt with no screenshot tool.
+- Goal registry (`driver.py --goal`, recorded in run.json/standings.json; the
+  site never ranks different goals against each other): `best-coaster`
+  (default), `finish-the-coaster` (harness builds a committed prefix from
+  `evals/programs/finish_prefix_<ride_type>.json` — dry-runs it at setup and
+  reads the report's `program.end_cursor`; model submits only the continuation
+  within the prefix's `completion_budget`; the merged program carries
+  `similarity_skip` so the prefix is exempt from the similarity penalty), and
+  `guest-services` (model submits a stall plan `{"stalls": [{stall_type, x, y,
+  dir, price}]}` — the same `--program` flag executes it via stalls.rs; score =
+  stall profit in dollars + park rating delta from report.json's `park`
+  section; needs a scenario with paths + guests), and `max-vomit` (track
+  program with `"open": true` so guests actually ride, optionally combined
+  with a `"stalls"` array in the same program — full stomachs double ride
+  nausea (Guest.cpp GuestUpdateRideNauseaGrowth) and vomiting halves them, so
+  food by the exit sustains the loop; lib.rs runs track first then stalls,
+  stall rejection indices continue past the track pieces; score = report
+  `park.vomit_events`, a cumulative counter hooked into Guest::throwUp —
+  immune to handymen sweeping and the engine's 500-litter cap, unlike the
+  also-reported `vomit_count`/`vomit_delta` pile snapshots (the driver and
+  site fall back to `vomit_delta` for reports from older binaries); also
+  needs a guest-flowing scenario). MCP serves per-goal
+  tool subsets via `/mcp?goal=...` (stall tools: place_stall,
+  set_stall_price, demolish_stall, park_state, advance_ticks; park_state
+  includes vomit_count; max-vomit sees both toolsets).
 - Two driver modes (`--mode`, recorded in run.json + standings.json, separate
   leaderboard sections in the site): `design` (from scratch) and `library`
   (model can search the stock .TD6 library via extra tools; tests retrieval +

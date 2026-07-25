@@ -156,6 +156,15 @@ fn round_badge(round: &Round, stats: Option<&RoundStats>) -> Option<Badge> {
     if round.build_error.is_some() {
         return badge("build failed", "badge-fail");
     }
+    // Guest-services rounds have no ride to rate; a clean round either scored
+    // or produced no park metrics at all.
+    if round.goal == model::GoalKind::GuestServices {
+        return if round.scoreable() {
+            None
+        } else {
+            badge("no park metrics", "badge-warn")
+        };
+    }
     match stats {
         Some(stats) if stats.crashed => badge("crashed", "badge-fail"),
         Some(_) => None,
@@ -243,7 +252,7 @@ fn standings(run: &EvalRun) -> Vec<StandingRow> {
             let best = model.best();
             let ride = best.and_then(|r| r.ride.as_ref());
             let score = if run.scenarios.is_empty() {
-                best.map(|r| format!("{:.2}", r.excitement()))
+                best.map(|r| format!("{:.2}", r.score()))
             } else {
                 best.map(|_| format!("{:.2}", run.score_of(model)))
             };
@@ -457,7 +466,7 @@ fn model_stats(run: &EvalRun, model: &ModelRun) -> Vec<Stat> {
     };
     let best = model.best();
     let ride = best.and_then(|r| r.ride.as_ref());
-    let rated = model.rounds.iter().filter(|r| r.excitement() > 0.0).count();
+    let rated = model.rounds.iter().filter(|r| r.scoreable()).count();
     let multi = !run.scenarios.is_empty();
     let mut stats = vec![
         stat(
@@ -557,7 +566,8 @@ fn build_model_page(
         place: place_label(place),
         of_models: run.models.len(),
         context: format!(
-            "{} · {} · {}{} · {}",
+            "{} · {} · {} · {}{} · {}",
+            run.goal,
             run.mode,
             run.ride_name(),
             run.harness,
@@ -566,7 +576,7 @@ fn build_model_page(
             } else {
                 format!(" · {} parks", run.scenarios.len())
             },
-            view::mode_tagline(&run.mode)
+            view::goal_tagline(&run.goal)
         ),
         stats: model_stats(run, model),
         model: view,
@@ -602,7 +612,7 @@ fn build_run_page(
     )?;
     let mut chrome = Chrome::new(
         &format!("Coaster Evals — {}", run.name),
-        &format!("RUN {} ({})", run.name, run.mode),
+        &format!("RUN {} ({} · {})", run.name, run.goal, run.mode),
         &path,
         base_url,
     )
@@ -610,10 +620,30 @@ fn build_run_page(
     if let Some(card) = &card {
         chrome = chrome.og_card(card);
     }
+    let score_note = match model::GoalKind::parse(&run.goal) {
+        model::GoalKind::GuestServices => {
+            "score = stall profit in dollars + park rating change over the simulated period"
+                .to_string()
+        }
+        model::GoalKind::MaxVomit => {
+            "score = times guests threw up over the simulated period, counted by the engine at \
+             the moment of the act (older runs fall back to vomit piles on the ground)"
+                .to_string()
+        }
+        model::GoalKind::Coaster => format!(
+            "score = excitement, scaled down when similarity to a stock library design exceeds {} \
+             (an exact or mirrored copy scores 0)",
+            run.grace
+        ),
+    };
     let page = RunPage {
         chrome,
-        mode_tagline: view::mode_tagline(&run.mode),
-        grace: format!("{}", run.grace),
+        mode_tagline: format!(
+            "{} · {}",
+            view::goal_tagline(&run.goal),
+            view::mode_tagline(&run.mode)
+        ),
+        score_note,
         standings: standings(run),
         models,
     };
@@ -674,6 +704,7 @@ fn index_rows(runs: &[EvalRun], store: &ArtStore, out: &Path) -> Result<Vec<Inde
                 run_href: format!("run-{}.html", run.name),
                 model_href: model_href(run, &model.model),
                 date: run.date(),
+                goal: run.goal.clone(),
                 mode: run.mode.clone(),
                 coaster: run.ride_name(),
                 harness: run.harness.clone(),
@@ -695,6 +726,28 @@ fn index_rows(runs: &[EvalRun], store: &ArtStore, out: &Path) -> Result<Vec<Inde
     }
     rows.sort_by(|a, b| b.sort_score.total_cmp(&a.sort_score));
     Ok(rows)
+}
+
+/// Splits score-sorted index rows into one leaderboard per goal: scores from
+/// different goals measure different things, so they never share a ranking.
+/// The flagship best-coaster section leads; other goals follow alphabetically.
+fn goal_sections(rows: Vec<IndexRow>) -> Vec<view::GoalSection> {
+    let mut sections: Vec<view::GoalSection> = Vec::new();
+    for row in rows {
+        match sections.iter_mut().find(|s| s.goal == row.goal) {
+            Some(section) => section.rows.push(row),
+            None => sections.push(view::GoalSection {
+                goal: row.goal.clone(),
+                tagline: view::goal_tagline(&row.goal),
+                rows: vec![row],
+            }),
+        }
+    }
+    sections.sort_by(|a, b| {
+        let rank = |s: &view::GoalSection| (s.goal != model::DEFAULT_GOAL, s.goal.clone());
+        rank(a).cmp(&rank(b))
+    });
+    sections
 }
 
 /// Every finished model run, as head-to-head contenders. Draws from all runs,
@@ -727,6 +780,7 @@ fn contenders(runs: &[EvalRun], store: &ArtStore, out: &Path) -> Result<Vec<view
                 date: run.date(),
                 model: model.model.clone(),
                 coaster: run.ride_name(),
+                goal: run.goal.clone(),
                 mode: run.mode.clone(),
                 harness: run.harness.clone(),
                 thumb,
@@ -741,10 +795,10 @@ fn contenders(runs: &[EvalRun], store: &ArtStore, out: &Path) -> Result<Vec<view
                 drops: ride.map(|r| r.num_drops),
                 best_round: best.map(|r| r.number),
                 rounds: model.rounds.len(),
-                rated_rounds: model.rounds.iter().filter(|r| r.excitement() > 0.0).count(),
+                rated_rounds: model.rounds.iter().filter(|r| r.scoreable()).count(),
                 tokens: totals.tokens_in + totals.tokens_out,
                 cost: totals.cost_usd,
-                round_scores: model.rounds.iter().map(|r| r.excitement()).collect(),
+                round_scores: model.rounds.iter().map(|r| r.score()).collect(),
             });
         }
     }
@@ -766,10 +820,13 @@ fn contenders(runs: &[EvalRun], store: &ArtStore, out: &Path) -> Result<Vec<view
 /// (Not to be confused with scenario parks, which multi-scenario runs play
 /// on; the head-to-head compares like coaster types regardless of park.)
 fn default_pair(contenders: &[view::Contender]) -> (String, String) {
-    let mut by_matchup: std::collections::HashMap<(&str, &str), Vec<&view::Contender>> =
+    let mut by_matchup: std::collections::HashMap<(&str, &str, &str), Vec<&view::Contender>> =
         std::collections::HashMap::new();
     for c in contenders {
-        by_matchup.entry((&c.coaster, &c.mode)).or_default().push(c);
+        by_matchup
+            .entry((&c.coaster, &c.mode, &c.goal))
+            .or_default()
+            .push(c);
     }
     let best = by_matchup
         .values()
@@ -810,9 +867,16 @@ fn write_matchup_card(
         (None, Some(_)) => (false, true),
         _ => (false, false),
     };
+    // The card's context line; non-default goals name themselves so a shared
+    // guest-services matchup is not mistaken for a coaster fight.
+    let mode_label = if a.goal == model::DEFAULT_GOAL {
+        a.mode.clone()
+    } else {
+        format!("{} · {}", a.goal, a.mode)
+    };
     images::write_compare_card(
         &a.coaster,
-        &a.mode,
+        &mode_label,
         &images::CardSide {
             shot: &out.join(la),
             model: &a.model,
@@ -852,8 +916,8 @@ fn write_compare_variant(
     )
     .width(view::Width::Mid)
     .description(&format!(
-        "{} vs {} — {} · {} mode. Head-to-head on CoasterBench.",
-        a.model, b.model, a.coaster, a.mode
+        "{} vs {} — {} · {} · {} mode. Head-to-head on CoasterBench.",
+        a.model, b.model, a.coaster, a.goal, a.mode
     ));
     if let Some(card) = card_name {
         chrome = chrome.og_card(card);
@@ -909,11 +973,11 @@ fn build_compare_page(
     )?;
 
     // A permalink page + card for every ordered same-class matchup (same
-    // coaster and mode), so a shared `compare-<a>.vs.<b>.html` unfurls with
-    // that exact pairing. The picker only allows same-class fights, so those
-    // are the only reachable deep links. Ordered (a left, b right) to match
-    // the URL and the swap.
-    let matchup_key = |c: &view::Contender| (c.coaster.clone(), c.mode.clone());
+    // coaster, mode, and goal), so a shared `compare-<a>.vs.<b>.html` unfurls
+    // with that exact pairing. The picker only allows same-class fights, so
+    // those are the only reachable deep links. Ordered (a left, b right) to
+    // match the URL and the swap.
+    let matchup_key = |c: &view::Contender| (c.coaster.clone(), c.mode.clone(), c.goal.clone());
     for a in contenders {
         for b in contenders {
             if a.id == b.id || matchup_key(a) != matchup_key(b) {
@@ -947,6 +1011,7 @@ fn facets(runs: &[EvalRun]) -> Vec<Facet> {
         }
     };
     vec![
+        collect("goal", runs.iter().map(|r| r.goal.clone()).collect()),
         collect("mode", runs.iter().map(|r| r.mode.clone()).collect()),
         collect("coaster", runs.iter().map(|r| r.ride_name()).collect()),
         collect("harness", runs.iter().map(|r| r.harness.clone()).collect()),
@@ -1103,12 +1168,15 @@ fn main() -> Result<()> {
         }
     }
 
+    let rows = index_rows(&runs, &store, out)?;
+    let total_rows = rows.len();
     let index = IndexPage {
         chrome: Chrome::new("Coaster Evals", "COASTER EVALS", "index.html", base_url)
             .width(view::Width::Mid)
             .with_mermaid(),
         facets: facets(&runs),
-        rows: index_rows(&runs, &store, out)?,
+        sections: goal_sections(rows),
+        total_rows,
         have_previews: store.have_previews(),
         mode_taglines: view::MODE_TAGLINES
             .iter()

@@ -45,6 +45,9 @@
 #include "../peep/PeepThoughts.h"
 #include "../peep/RideUseSystem.h"
 #include "../rct2/RCT2.h"
+#ifdef ENABLE_RUST_AGENT
+    #include "../rustbridge/RustBridge.h"
+#endif
 #include "../ride/Ride.h"
 #include "../ride/RideData.h"
 #include "../ride/RideManager.hpp"
@@ -7785,6 +7788,9 @@ namespace OpenRCT2
 
     void Guest::throwUp()
     {
+#ifdef ENABLE_RUST_AGENT
+        RustBridge::CountVomit();
+#endif
         hunger /= 2;
         nauseaTarget /= 2;
 

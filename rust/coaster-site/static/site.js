@@ -12,11 +12,24 @@ document.addEventListener('click', function (e) {
     });
     document.querySelectorAll('.run-table tbody tr').forEach(function (row) {
       var show = true;
+      if (active.goal && row.dataset.goal !== active.goal) show = false;
       if (active.mode && row.dataset.mode !== active.mode) show = false;
       if (active.coaster && row.dataset.coaster !== active.coaster) show = false;
       if (active.harness && row.dataset.harness !== active.harness) show = false;
       if (active.model && row.dataset.model !== active.model) show = false;
       row.style.display = show ? '' : 'none';
+    });
+    // A goal section whose rows are all filtered out hides entirely
+    // (its table and heading would otherwise dangle empty).
+    document.querySelectorAll('.run-table').forEach(function (table) {
+      var any = Array.prototype.some.call(table.tBodies[0].rows, function (row) {
+        return row.style.display !== 'none';
+      });
+      table.style.display = any ? '' : 'none';
+      var heading = table.previousElementSibling;
+      if (heading && heading.classList.contains('goal-heading')) {
+        heading.style.display = any ? '' : 'none';
+      }
     });
     return;
   }
@@ -113,8 +126,10 @@ document.querySelectorAll('[data-trace-filter]').forEach(function (btn) {
   // Only same-class contenders may fight: comparing library vs design, or
   // wooden vs twister, is apples to oranges (different tasks, different rating
   // scales). A class is the coaster and the mode together (not a scenario
-  // park; multi-scenario runs still compare by coaster and mode).
-  var classOf = function (c) { return c.coaster + ' · ' + c.mode; };
+  // park; multi-scenario runs still compare by coaster and mode). The goal
+  // joins the key: a guest-services run must never pair against a coaster
+  // run, even on the same map. Older embedded data has no goal field.
+  var classOf = function (c) { return (c.goal || 'best-coaster') + ' · ' + c.coaster + ' · ' + c.mode; };
 
   function option(c) {
     var o = document.createElement('option');
@@ -199,7 +214,7 @@ document.querySelectorAll('[data-trace-filter]').forEach(function (btn) {
     return '<div class="vs-card vs-' + side + '">' + thumb
       + '<div class="vs-meta"><a class="vs-model" href="' + c.href + '">' + c.model + '</a>'
       + '<span class="dim">' + c.run + ' · ' + c.date + '</span>'
-      + '<span class="dim">' + c.coaster + ' · ' + c.mode + ' · ' + c.harness + '</span></div></div>';
+      + '<span class="dim">' + classOf(c) + ' · ' + c.harness + '</span></div></div>';
   }
 
   function bar(m, a, b) {

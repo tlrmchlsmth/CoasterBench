@@ -36,6 +36,9 @@ pub fn sanitise_name(name: &str) -> String {
 
 #[derive(Debug, Deserialize, Default)]
 struct RunMeta {
+    /// Eval objective ("best-coaster", "finish-the-coaster",
+    /// "guest-services"); absent on runs from before the goal registry.
+    goal: Option<String>,
     mode: Option<String>,
     similarity_grace: Option<f64>,
     ride_type: Option<i64>,
@@ -51,6 +54,29 @@ struct RunMeta {
     /// runs.
     #[serde(default)]
     scenarios: Vec<String>,
+}
+
+/// The default goal, assumed for every run that predates the goal registry.
+pub const DEFAULT_GOAL: &str = "best-coaster";
+
+/// How a round is scored, derived from the run's goal string. Unknown goals
+/// score like coasters so a future goal degrades to something sensible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GoalKind {
+    #[default]
+    Coaster,
+    GuestServices,
+    MaxVomit,
+}
+
+impl GoalKind {
+    pub fn parse(goal: &str) -> GoalKind {
+        match goal {
+            "guest-services" => GoalKind::GuestServices,
+            "max-vomit" => GoalKind::MaxVomit,
+            _ => GoalKind::Coaster,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,12 +122,35 @@ struct ProgramResult {
     error: Option<ProgramError>,
 }
 
+/// Park-level metrics (report.json `park`); what guest-services is scored on.
+#[derive(Debug, Deserialize, Clone)]
+pub struct Park {
+    #[serde(default)]
+    pub park_rating: i64,
+    #[serde(default)]
+    pub park_rating_delta: Option<i64>,
+    #[serde(default)]
+    pub guests_count: i64,
+    #[serde(default)]
+    pub stall_profit: Option<f64>,
+    #[serde(default)]
+    pub vomit_count: i64,
+    #[serde(default)]
+    pub vomit_delta: Option<i64>,
+    /// Guest vomit events over the run: the max-vomit score. Older reports
+    /// only have the pile delta, which stands in for it.
+    #[serde(default)]
+    pub vomit_events: Option<i64>,
+}
+
 #[derive(Debug, Deserialize)]
 struct Report {
     #[serde(default)]
     program: Option<ProgramResult>,
     #[serde(default)]
     rides: Vec<Ride>,
+    #[serde(default)]
+    park: Option<Park>,
     #[serde(default)]
     similarity: Option<Similarity>,
 }
@@ -164,7 +213,11 @@ pub struct Round {
     /// Normalised agent session events (trace.jsonl), oldest first. Only rounds
     /// driven by coaster-bench have one.
     pub trace: Vec<TraceEvent>,
+    /// Park metrics of the round's report, when the report carried them.
+    pub park: Option<Park>,
     grace: f64,
+    /// How this round scores, set by the run's goal.
+    pub goal: GoalKind,
 }
 
 /// One event from a round's trace.jsonl. Field meanings are set by
@@ -226,6 +279,45 @@ impl Round {
         raw * similarity_multiplier(sim, self.grace)
     }
 
+    /// The goal's scalar for ranking: penalized excitement for coaster goals,
+    /// stall profit + park rating delta for guest-services.
+    pub fn score(&self) -> f64 {
+        match self.goal {
+            GoalKind::Coaster => self.excitement(),
+            GoalKind::GuestServices => self.park.as_ref().map_or(0.0, |p| {
+                p.stall_profit.unwrap_or(0.0) + p.park_rating_delta.unwrap_or(0) as f64
+            }),
+            GoalKind::MaxVomit => self
+                .park
+                .as_ref()
+                .and_then(|p| p.vomit_events.or(p.vomit_delta))
+                .unwrap_or(0) as f64,
+        }
+    }
+
+    /// Whether the round produced anything the goal can score. Distinct from
+    /// `score() > 0`: a guest-services round can legitimately score negative
+    /// (the park rating dropped) and still be the model's best.
+    pub fn scoreable(&self) -> bool {
+        match self.goal {
+            GoalKind::Coaster => self.excitement() > 0.0,
+            GoalKind::GuestServices => {
+                self.build_error.is_none()
+                    && self
+                        .park
+                        .as_ref()
+                        .is_some_and(|p| p.stall_profit.is_some() || p.park_rating_delta.is_some())
+            }
+            GoalKind::MaxVomit => {
+                self.build_error.is_none()
+                    && self
+                        .park
+                        .as_ref()
+                        .is_some_and(|p| p.vomit_events.is_some() || p.vomit_delta.is_some())
+            }
+        }
+    }
+
     pub fn fetched_designs(&self) -> Vec<&str> {
         self.lookups
             .iter()
@@ -254,28 +346,28 @@ impl ModelRun {
     pub fn best(&self) -> Option<&Round> {
         self.rounds
             .iter()
-            .filter(|r| r.excitement() > 0.0)
-            .max_by(|a, b| a.excitement().total_cmp(&b.excitement()))
+            .filter(|r| r.scoreable())
+            .max_by(|a, b| a.score().total_cmp(&b.score()))
     }
 
-    /// The best rated round on one scenario park.
+    /// The best scoreable round on one scenario park.
     pub fn best_in(&self, scenario: &str) -> Option<&Round> {
         self.rounds
             .iter()
-            .filter(|r| r.scenario.as_deref() == Some(scenario) && r.excitement() > 0.0)
-            .max_by(|a, b| a.excitement().total_cmp(&b.excitement()))
+            .filter(|r| r.scenario.as_deref() == Some(scenario) && r.scoreable())
+            .max_by(|a, b| a.score().total_cmp(&b.score()))
     }
 
     /// Aggregate score across scenario parks: the mean of each park's best
-    /// excitement, counting a park with no rated coaster as zero — the
+    /// goal score, counting a park with no scoreable round as zero — the
     /// aggregate measures reliability across parks, not just the good ones.
     pub fn aggregate_score(&self, scenarios: &[String]) -> f64 {
         if scenarios.is_empty() {
-            return self.best().map_or(0.0, |r| r.excitement());
+            return self.best().map_or(0.0, |r| r.score());
         }
         let total: f64 = scenarios
             .iter()
-            .map(|s| self.best_in(s).map_or(0.0, |r| r.excitement()))
+            .map(|s| self.best_in(s).map_or(0.0, |r| r.score()))
             .sum();
         total / scenarios.len() as f64
     }
@@ -317,6 +409,9 @@ impl ModelRun {
 #[derive(Debug)]
 pub struct EvalRun {
     pub name: String,
+    /// The run's declared objective; runs of different goals are never ranked
+    /// against each other.
+    pub goal: String,
     pub mode: String,
     pub grace: f64,
     pub models: Vec<ModelRun>,
@@ -406,7 +501,7 @@ impl EvalRun {
     /// across-parks aggregate on multi-scenario runs.
     pub fn score_of(&self, model: &ModelRun) -> f64 {
         if self.scenarios.is_empty() {
-            model.best().map_or(0.0, |r| r.excitement())
+            model.best().map_or(0.0, |r| r.score())
         } else {
             model.aggregate_score(&self.scenarios)
         }
@@ -420,7 +515,8 @@ impl EvalRun {
         model.rounds.len() as u32 >= self.expected_round_count() && self.expected_round_count() > 0
     }
 
-    /// Models best-first, so index one is the winner.
+    /// Models best-first, so index one is the winner. Within a run every
+    /// round shares the same goal, so scores are comparable.
     pub fn ranked(&self) -> Vec<&ModelRun> {
         let mut models: Vec<&ModelRun> = self.models.iter().collect();
         models.sort_by(|a, b| self.score_of(b).total_cmp(&self.score_of(a)));
@@ -483,6 +579,7 @@ fn load_round(
     store: &ArtStore,
     grace: f64,
     scenario: Option<&str>,
+    goal: GoalKind,
 ) -> Result<Option<Round>> {
     let report_path = round_dir.join("report.json");
     if !report_path.is_file() {
@@ -530,7 +627,9 @@ fn load_round(
         lookups: read_json_opt(&round_dir.join("lookups.json"))?.unwrap_or_default(),
         usage: read_json_opt(&round_dir.join("usage.json"))?,
         trace: read_trace(&round_dir.join("trace.jsonl")),
+        park: report.park,
         grace,
+        goal,
     }))
 }
 
@@ -546,6 +645,8 @@ pub fn load_runs(runs_dir: &Path, store: &ArtStore) -> Result<Vec<EvalRun>> {
         // runs are design mode with the default grace.
         let meta: RunMeta = read_json_opt(&run_dir.join("run.json"))?.unwrap_or_default();
         let grace = meta.similarity_grace.unwrap_or(DEFAULT_SIMILARITY_GRACE);
+        let goal = meta.goal.unwrap_or_else(|| DEFAULT_GOAL.to_string());
+        let goal_kind = GoalKind::parse(&goal);
 
         let dir_name = |path: &Path| {
             path.file_name()
@@ -566,7 +667,7 @@ pub fn load_runs(runs_dir: &Path, store: &ArtStore) -> Result<Vec<EvalRun>> {
                 }
                 let name = dir_name(&entry);
                 if name.starts_with("round_") {
-                    if let Some(round) = load_round(&entry, &run_dir, store, grace, None)? {
+                    if let Some(round) = load_round(&entry, &run_dir, store, grace, None, goal_kind)? {
                         rounds.push(round);
                     }
                 } else {
@@ -578,7 +679,7 @@ pub fn load_runs(runs_dir: &Path, store: &ArtStore) -> Result<Vec<EvalRun>> {
                             continue;
                         }
                         if let Some(round) =
-                            load_round(&round_dir, &run_dir, store, grace, Some(&name))?
+                            load_round(&round_dir, &run_dir, store, grace, Some(&name), goal_kind)?
                         {
                             if !seen_scenarios.contains(&name) {
                                 seen_scenarios.push(name.clone());
@@ -613,6 +714,7 @@ pub fn load_runs(runs_dir: &Path, store: &ArtStore) -> Result<Vec<EvalRun>> {
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string(),
+            goal,
             mode: meta.mode.unwrap_or_else(|| "design".to_string()),
             grace,
             models,
@@ -705,13 +807,16 @@ mod tests {
             lookups: Vec::new(),
             usage: None,
             trace: Vec::new(),
+            park: None,
             grace: DEFAULT_SIMILARITY_GRACE,
+            goal: GoalKind::Coaster,
         }
     }
 
     fn run(models: Vec<(&str, u32)>, expected: &[&str], rounds: Option<u32>) -> EvalRun {
         EvalRun {
             name: "20260101-test".to_string(),
+            goal: DEFAULT_GOAL.to_string(),
             mode: "design".to_string(),
             grace: DEFAULT_SIMILARITY_GRACE,
             models: models
@@ -810,5 +915,66 @@ mod tests {
         // 2 rounds per park x 3 parks; the model's 6 flat rounds satisfy it.
         assert_eq!(multi.expected_round_count(), 6);
         assert_eq!(multi.incomplete_reason(), None);
+    }
+
+    #[test]
+    fn goal_kind_parses_known_goals_and_defaults_to_coaster() {
+        assert_eq!(GoalKind::parse("guest-services"), GoalKind::GuestServices);
+        assert_eq!(GoalKind::parse("max-vomit"), GoalKind::MaxVomit);
+        assert_eq!(GoalKind::parse("best-coaster"), GoalKind::Coaster);
+        assert_eq!(GoalKind::parse("finish-the-coaster"), GoalKind::Coaster);
+        assert_eq!(GoalKind::parse("some-future-goal"), GoalKind::Coaster);
+    }
+
+    #[test]
+    fn max_vomit_rounds_score_the_vomit_delta() {
+        let mut vomit = round(1, 6.0);
+        vomit.goal = GoalKind::MaxVomit;
+        assert!(
+            !vomit.scoreable(),
+            "a rated ride alone is not a vomit score"
+        );
+        vomit.park = Some(Park {
+            park_rating: 700,
+            park_rating_delta: Some(-3),
+            guests_count: 180,
+            stall_profit: None,
+            vomit_count: 44,
+            vomit_delta: Some(41),
+            vomit_events: Some(97),
+        });
+        assert!(vomit.scoreable());
+        // The score is the event count: piles on the ground undercount
+        // (handymen, litter cap), so 97 heaves beat 41 surviving piles.
+        assert_eq!(vomit.score(), 97.0);
+        // Reports from older binaries have no event counter; the pile delta
+        // stands in so old runs still rank.
+        if let Some(park) = vomit.park.as_mut() {
+            park.vomit_events = None;
+        }
+        assert!(vomit.scoreable());
+        assert_eq!(vomit.score(), 41.0);
+    }
+
+    #[test]
+    fn guest_services_rounds_score_profit_plus_rating_delta() {
+        let mut guest = round(1, 0.0);
+        guest.ride = None;
+        guest.goal = GoalKind::GuestServices;
+        assert!(!guest.scoreable(), "no park metrics yet");
+        guest.park = Some(Park {
+            park_rating: 712,
+            park_rating_delta: Some(-12),
+            guests_count: 210,
+            stall_profit: Some(48.5),
+            vomit_count: 0,
+            vomit_delta: None,
+            vomit_events: None,
+        });
+        assert!(guest.scoreable(), "negative deltas still count");
+        assert!((guest.score() - 36.5).abs() < 1e-9);
+        // A coaster round with the same park data ignores it.
+        let coaster = round(1, 6.0);
+        assert_eq!(coaster.score(), 6.0);
     }
 }

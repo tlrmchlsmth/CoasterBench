@@ -17,6 +17,17 @@ pub struct TrackProgram {
     pub ride_type: u16,
     pub start: Start,
     pub pieces: Vec<Piece>,
+    /// Leading pieces to exclude from the stock-library similarity check.
+    /// The finish-the-coaster goal sets this to the length of the committed
+    /// prefix the harness built: the model should not be penalised for track
+    /// it did not choose.
+    #[serde(default)]
+    pub similarity_skip: usize,
+    /// Open the ride to guests instead of flipping it to testing. Goals
+    /// scored on what riders do (max-vomit) need real guests aboard, and
+    /// guests only queue for open rides. Circuit validation is identical.
+    #[serde(default)]
+    pub open: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,6 +98,32 @@ fn rejection_message(track_type: u16, cursor: &host::TrackCursor, error: &str) -
     )
 }
 
+/// Cursor state in tile coordinates, as reported to agents (matching the MCP
+/// server's cursor JSON): tile x/y, raw z, facing 0-3, TrackRoll bank,
+/// TrackPitch slope.
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+pub struct CursorState {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub dir: u8,
+    pub bank: u8,
+    pub slope: u8,
+}
+
+impl From<&host::TrackCursor> for CursorState {
+    fn from(c: &host::TrackCursor) -> CursorState {
+        CursorState {
+            x: c.x / 32,
+            y: c.y / 32,
+            z: c.z,
+            dir: c.direction,
+            bank: c.bank,
+            slope: c.slope,
+        }
+    }
+}
+
 /// Result of executing a track program, later folded into the eval report.
 #[derive(Debug, Serialize, Default)]
 pub struct ProgramOutcome {
@@ -96,6 +133,11 @@ pub struct ProgramOutcome {
     pub pieces_total: usize,
     pub total_cost: i64,
     pub error: Option<ProgramError>,
+    /// Where the track cursor ended up, whether or not the program succeeded.
+    /// The finish-the-coaster harness dry-runs its prefix and reads this to
+    /// tell the model where to pick up building.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_cursor: Option<CursorState>,
     /// Track types actually placed, in order, for the similarity check. Not
     /// serialised: the program JSON already spells out the pieces.
     #[serde(skip)]
@@ -104,6 +146,18 @@ pub struct ProgramOutcome {
     /// cursor. Lets a renderer draw the layout schematically with no game
     /// assets: point i to i+1 is the chord of piece i.
     pub trace: Vec<TracePoint>,
+    /// Leading entries of `placed_types` excluded from the similarity check
+    /// (the finish goal's committed prefix).
+    #[serde(skip)]
+    pub similarity_skip: usize,
+    /// Rides created as stalls by a stall plan (guest-services goal); the
+    /// report scores their profit.
+    #[serde(skip)]
+    pub stall_ids: Vec<u16>,
+    /// Park counters snapshotted before the simulation ran, so the report can
+    /// state the rating delta the agent's changes produced.
+    #[serde(skip)]
+    pub park_before: Option<host::ParkStats>,
 }
 
 #[derive(Debug, Serialize)]
@@ -212,6 +266,8 @@ pub fn run(json: &str) -> ProgramOutcome {
     let mut outcome = ProgramOutcome {
         ride_id: Some(ride_id),
         pieces_total: program.pieces.len(),
+        similarity_skip: program.similarity_skip,
+        park_before: host::park_stats(),
         ..ProgramOutcome::default()
     };
 
@@ -237,6 +293,7 @@ pub fn run(json: &str) -> ProgramOutcome {
                     piece: None,
                     message,
                 });
+                outcome.end_cursor = Some((&cursor).into());
                 return outcome;
             }
         };
@@ -265,10 +322,12 @@ pub fn run(json: &str) -> ProgramOutcome {
                     piece: Some(describe(track_type)),
                     message: rejection_message(track_type, &cursor, &message),
                 });
+                outcome.end_cursor = Some((&cursor).into());
                 return outcome;
             }
         }
     }
+    outcome.end_cursor = Some((&cursor).into());
 
     // Testing requires an entrance and an exit next to the station. Placement
     // direction rules are fiddly, so lean on the game's own validation: try
@@ -282,8 +341,14 @@ pub fn run(json: &str) -> ProgramOutcome {
         return outcome;
     }
 
-    // Flip to testing so trains spawn and the game measures the layout.
-    if let Err(message) = host::ride_set_status(ride_id, 2) {
+    // Flip to testing so trains spawn and the game measures the layout, or
+    // straight to open when the goal needs guests riding.
+    let (status, status_name) = if program.open {
+        (1, "open")
+    } else {
+        (2, "testing")
+    };
+    if let Err(message) = host::ride_set_status(ride_id, status) {
         // A circuit gap is invisible from the game's error alone; report where
         // the track ended relative to where it started so the agent can close it.
         let start_tile = (program.start.x, program.start.y);
@@ -292,7 +357,7 @@ pub fn run(json: &str) -> ProgramOutcome {
             piece_index: None,
             piece: None,
             message: format!(
-                "set_status(testing): {message} \
+                "set_status({status_name}): {message} \
                  [track starts at tile ({}, {}, z={}, dir={}, bank=0, slope=0) and ends at tile ({}, {}, z={}, dir={}, bank={}, slope={}); \
                  a closed circuit requires these to be identical]",
                 start_tile.0, start_tile.1, z, program.start.dir & 3, end_tile.0, end_tile.1, cursor.z, cursor.direction, cursor.bank, cursor.slope
@@ -352,6 +417,26 @@ mod tests {
     #[test]
     fn unknown_name_resolves_to_error() {
         assert!(resolve(&PieceRef::Name("loop_de_loop".into())).is_err());
+    }
+
+    #[test]
+    fn open_and_similarity_skip_parse_and_default_off() {
+        let json = r#"{
+            "ride_type": 51,
+            "start": {"x": 10, "y": 12, "dir": 1},
+            "pieces": ["begin_station"],
+            "similarity_skip": 16,
+            "open": true
+        }"#;
+        let p: TrackProgram = serde_json::from_str(json).expect("parse");
+        assert!(p.open);
+        assert_eq!(p.similarity_skip, 16);
+        let bare: TrackProgram = serde_json::from_str(
+            r#"{"ride_type": 51, "start": {"x": 1, "y": 2, "dir": 0}, "pieces": ["flat"]}"#,
+        )
+        .expect("parse");
+        assert!(!bare.open, "programs default to the testing path");
+        assert_eq!(bare.similarity_skip, 0);
     }
 
     #[test]
