@@ -73,8 +73,27 @@ struct Args {
     )]
     scenario: String,
 
+    /// Run every contender across the first N generated scenario parks (seeds
+    /// from evals/scenarios/seeds.json, regenerated deterministically on
+    /// demand) and aggregate scores across parks. Overrides --scenario.
+    #[arg(long, default_value_t = 0)]
+    scenarios: u32,
+
+    /// With --scenarios: how many parks run at once. Each concurrent park is
+    /// its own game server on its own port (--port + slot), so the sandbox
+    /// policy must allow this many consecutive ports. Contenders on the same
+    /// park always run sequentially (they share its server).
+    #[arg(long, default_value_t = 3)]
+    concurrency: usize,
+
     #[arg(long, default_value = "~/rct2-assets")]
     rct2_data: String,
+
+    /// Run the game servers without RCT2 assets (--no-graphics): the whole
+    /// interactive build/test/rate loop works, but the MCP server drops the
+    /// screenshot tool and park.png captures are skipped.
+    #[arg(long)]
+    no_graphics: bool,
 
     /// Reuse an already-running MCP server instead of spawning one.
     #[arg(long)]
@@ -104,18 +123,22 @@ struct GameServer {
 }
 
 impl GameServer {
-    fn spawn(args: &Args, root: &Path) -> Result<GameServer, String> {
+    fn spawn(args: &Args, root: &Path, scenario: &Path, port: u16) -> Result<GameServer, String> {
         let cli = root.join("build/openrct2-cli");
         if !cli.is_file() {
             return Err(format!("{} not built", cli.display()));
         }
-        let child = Command::new(cli)
-            .arg("eval")
-            .arg(expand_home(&args.scenario))
-            .arg("--rct2-data-path")
-            .arg(expand_home(&args.rct2_data))
+        let mut cmd = Command::new(cli);
+        cmd.arg("eval").arg(scenario);
+        if args.no_graphics {
+            cmd.arg("--no-graphics");
+        } else {
+            cmd.arg("--rct2-data-path")
+                .arg(expand_home(&args.rct2_data));
+        }
+        let child = cmd
             .arg("--serve")
-            .arg(args.port.to_string())
+            .arg(port.to_string())
             .arg("--serve-bind")
             .arg("0.0.0.0")
             .stdout(Stdio::null())
@@ -321,12 +344,17 @@ fn openrouter_spend() -> Option<f64> {
 
 /// Point the opencode sandbox at this contender's MCP endpoint. Written fresh
 /// per session so a mixed vision/text-only lineup can share one sandbox.
-fn write_opencode_config(args: &Args, contender: &Contender, lease: &str) -> Result<(), String> {
+fn write_opencode_config(
+    args: &Args,
+    contender: &Contender,
+    port: u16,
+    lease: &str,
+) -> Result<(), String> {
     let config = json!({
         "$schema": "https://opencode.ai/config.json",
         "model": contender.model,
         "mcp": {
-            "coaster": {"type": "remote", "url": contender.mcp_url(args.port, lease), "enabled": true}
+            "coaster": {"type": "remote", "url": contender.mcp_url(port, lease), "enabled": true}
         }
     })
     .to_string();
@@ -380,9 +408,11 @@ fn kill_stray_agents(sandbox: &str) {
 fn run_agent_session(
     args: &Args,
     contender: &Contender,
+    port: u16,
     prompt: &str,
     round_dir: &Path,
     lease: &str,
+    kill_on_timeout: bool,
 ) -> SessionResult {
     let mut cmd = Command::new("openshell");
     let spend_before = match contender.harness {
@@ -393,7 +423,7 @@ fn run_agent_session(
         Harness::ClaudeCode => {
             let mcp_config = json!({
                 "mcpServers": {
-                    "coaster": {"type": "http", "url": contender.mcp_url(args.port, lease)}
+                    "coaster": {"type": "http", "url": contender.mcp_url(port, lease)}
                 }
             });
             cmd.args(["sandbox", "exec", "-n", &args.sandbox, "--"])
@@ -409,7 +439,7 @@ fn run_agent_session(
             // sandbox, so the per-contender endpoint has to be written there
             // before the session starts. Model comes fully qualified on the
             // command line (e.g. openrouter/poolside/...).
-            if let Err(e) = write_opencode_config(args, contender, lease) {
+            if let Err(e) = write_opencode_config(args, contender, port, lease) {
                 return SessionResult {
                     usage: Value::Null,
                     error: Some(e),
@@ -455,8 +485,15 @@ fn run_agent_session(
                 timed_out = true;
                 let _ = child.kill();
                 let status = child.wait().ok();
-                // The local client is gone; the agent inside the sandbox is not.
-                kill_stray_agents(contender.sandbox(args));
+                // The local client is gone; the agent inside the sandbox is
+                // not. The in-sandbox sweep kills every agent process, so it
+                // is only safe when no other session shares the sandbox
+                // (concurrent parks rely on lease eviction instead: the stray
+                // keeps thinking until its own limits, but the next round's
+                // claim locks it out of the park).
+                if kill_on_timeout {
+                    kill_stray_agents(contender.sandbox(args));
+                }
                 break status;
             }
             Ok(None) => std::thread::sleep(Duration::from_secs(1)),
@@ -618,6 +655,121 @@ fn best_excitement(report: &Value) -> Option<f64> {
     Some(raw * multiplier)
 }
 
+/// One generated scenario park a multi-scenario run competes on.
+struct ScenarioPark {
+    /// Directory / display label, e.g. "seed_42".
+    label: String,
+    path: PathBuf,
+    /// Prompt map line rendered from the generator's hints sidecar.
+    map_line: String,
+}
+
+/// First N seeds of the committed list.
+fn load_seeds(root: &Path, count: u32) -> Result<Vec<u64>, String> {
+    let path = root.join("evals/scenarios/seeds.json");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let value: Value =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let seeds: Vec<u64> = value
+        .get("seeds")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_u64).collect())
+        .unwrap_or_default();
+    if (count as usize) > seeds.len() {
+        return Err(format!(
+            "--scenarios {count} but {} only lists {} seeds",
+            path.display(),
+            seeds.len()
+        ));
+    }
+    Ok(seeds[..count as usize].to_vec())
+}
+
+/// Generates (or reuses) the deterministic park for a seed and renders its
+/// prompt map line from the hints sidecar. Same seed always gives the same
+/// bytes, so the gitignored cache never goes stale; --make-park needs no RCT2
+/// assets.
+fn ensure_generated_park(root: &Path, seed: u64) -> Result<ScenarioPark, String> {
+    let dir = root.join("evals/scenarios/generated");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let park = dir.join(format!("seed_{seed}.park"));
+    let hints_path = dir.join(format!("seed_{seed}.hints.json"));
+    if !park.is_file() || !hints_path.is_file() {
+        let output = Command::new(root.join("build/openrct2-cli"))
+            .args(["eval", "--make-park"])
+            .arg(&park)
+            .args(["--seed", &seed.to_string()])
+            .output()
+            .map_err(|e| format!("run --make-park: {e}"))?;
+        if !park.is_file() || !hints_path.is_file() {
+            return Err(format!(
+                "park generation failed for seed {seed}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+    }
+    let hints: Value =
+        serde_json::from_str(&std::fs::read_to_string(&hints_path).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("{}: {e}", hints_path.display()))?;
+    Ok(ScenarioPark {
+        label: format!("seed_{seed}"),
+        path: park,
+        map_line: map_line_from_hints(&hints),
+    })
+}
+
+/// Renders the generator's machine hints into the prompt map line. Keep the
+/// shape in sync with map_line_from_hints in evals/driver.py.
+fn map_line_from_hints(hints: &Value) -> String {
+    let int = |ptr: &str| hints.pointer(ptr).and_then(Value::as_i64).unwrap_or(0);
+    let size = int("/map_size");
+    let mut parts = vec![format!(
+        "a generated park, {size}x{size} tiles (playable {}-{} on both axes).",
+        int("/playable/min"),
+        int("/playable/max")
+    )];
+    let square = int("/start/open_square");
+    let anchor = if square > 0 {
+        format!(
+            "a {square}x{square}-tile dry square centred on tile ({}, {})",
+            int("/start/x"),
+            int("/start/y")
+        )
+    } else {
+        format!("around tile ({}, {})", int("/start/x"), int("/start/y"))
+    };
+    parts.push(format!(
+        "The most open ground is {anchor} - anchor your station there and grow the layout outward, \
+         using placement errors and valid_next_pieces to feel out the terrain."
+    ));
+    let hilliness = int("/hilliness");
+    if hilliness == 0 {
+        parts.push("The terrain is entirely flat.".to_string());
+    } else {
+        let roughness = match hilliness {
+            1..=3 => "gently rolling",
+            4..=6 => "hilly",
+            _ => "mountainous",
+        };
+        parts.push(format!(
+            "Terrain is {roughness}: surface heights span {}-{} z-units (one up_25 piece climbs 16 z-units).",
+            int("/surface_z/min"),
+            int("/surface_z/max")
+        ));
+    }
+    let water = hints
+        .get("water_fraction")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    if water > 0.01 {
+        parts.push(format!(
+            "About {}% of the map is under water; you cannot build below the waterline.",
+            (water * 100.0).round() as i64
+        ));
+    }
+    parts.join(" ")
+}
+
 /// Wall-clock seconds, used to make each round's lease unique across restarts.
 fn epoch_secs() -> u64 {
     SystemTime::now()
@@ -666,9 +818,13 @@ fn main() -> Result<(), String> {
                 None,
                 Modalities::TEXT | Modalities::IMAGE,
                 args.session_timeout,
+                None,
             )
         );
         return Ok(());
+    }
+    if args.attach && args.scenarios > 0 {
+        return Err("--attach reuses one running server; --scenarios needs one per park".into());
     }
 
     let suffix = args.name.clone().unwrap_or_else(|| "bench".into());
@@ -681,15 +837,6 @@ fn main() -> Result<(), String> {
         run_dir.display(),
         args.ride_type
     );
-
-    let _server = if args.attach {
-        None
-    } else {
-        Some(GameServer::spawn(&args, &root)?)
-    };
-    let mut client = mcp::McpClient::new("127.0.0.1", args.port);
-    wait_for_server(&mut client, Duration::from_secs(120))?;
-    println!("game server ready on port {}", args.port);
 
     let contenders: Vec<Contender> = args.models.iter().map(|s| Contender::parse(s)).collect();
     // A previous run killed from the outside can leave an agent alive in its
@@ -728,99 +875,72 @@ fn main() -> Result<(), String> {
     } else {
         "mixed".to_string()
     };
-    write_json(
-        &run_dir.join("run.json"),
-        &json!({
-            "mode": "design",
-            "orchestrator": "coaster-bench",
-            "harness": run_harness,
-            "harnesses": harnesses,
-            "models": contenders.iter().map(Contender::display).collect::<Vec<_>>(),
-            "modalities": modalities,
-            "rounds": args.rounds,
-            "ticks": args.ticks,
-            "ride_type": args.ride_type,
-            "similarity_grace": 0.5,
-        }),
-    )?;
+    // Multi-scenario runs generate their parks up front so run.json can
+    // record what was promised before anything competes.
+    let seeds = if args.scenarios > 0 {
+        load_seeds(&root, args.scenarios)?
+    } else {
+        Vec::new()
+    };
+    if !seeds.is_empty() {
+        println!("generating {} scenario park(s)...", seeds.len());
+    }
+    let scenario_parks: Vec<ScenarioPark> = seeds
+        .iter()
+        .map(|seed| ensure_generated_park(&root, *seed))
+        .collect::<Result<_, _>>()?;
+
+    let mut run_meta = json!({
+        "mode": "design",
+        "orchestrator": "coaster-bench",
+        "harness": run_harness,
+        "harnesses": harnesses,
+        "models": contenders.iter().map(Contender::display).collect::<Vec<_>>(),
+        "modalities": modalities,
+        "rounds": args.rounds,
+        "ticks": args.ticks,
+        "ride_type": args.ride_type,
+        "no_graphics": args.no_graphics,
+        "similarity_grace": 0.5,
+    });
+    if !scenario_parks.is_empty() {
+        run_meta["scenarios"] = json!(scenario_parks
+            .iter()
+            .map(|p| p.label.clone())
+            .collect::<Vec<_>>());
+        run_meta["seeds"] = json!(seeds);
+    }
+    write_json(&run_dir.join("run.json"), &run_meta)?;
+
+    if !scenario_parks.is_empty() {
+        return run_multi_scenario(&args, &root, &contenders, &scenario_parks, &run_dir);
+    }
+
+    let _server = if args.attach {
+        None
+    } else {
+        Some(GameServer::spawn(
+            &args,
+            &root,
+            &expand_home(&args.scenario),
+            args.port,
+        )?)
+    };
+    let mut client = mcp::McpClient::new("127.0.0.1", args.port);
+    wait_for_server(&mut client, Duration::from_secs(120))?;
+    println!("game server ready on port {}", args.port);
 
     let mut standings: Vec<Value> = Vec::new();
     for contender in &contenders {
-        let model = contender.display();
-        let mut best: Option<(u32, f64)> = None;
-        let mut feedback: Option<String> = None;
-        for round in 1..=args.rounds {
-            // One lease per round: claiming it evicts any agent still alive
-            // from an earlier round, which would otherwise build in this park.
-            let lease = format!("{}-r{round}-{}", model, epoch_secs());
-            client.claim("127.0.0.1", args.port, &lease);
-            // A fresh park state for every round.
-            let _ = client.call("demolish", json!({}));
-            let prompt = prompt::round_prompt(
-                args.ride_type,
-                round,
-                args.rounds,
-                feedback.as_deref(),
-                contender.modalities,
-                args.session_timeout,
-            );
-            // Created up front: the session streams its logs in here while it
-            // runs, so `tail -f` works on a round in progress.
-            let round_dir = run_dir.join(&model).join(format!("round_{round}"));
-            if let Err(e) = std::fs::create_dir_all(&round_dir) {
-                return Err(format!("create {}: {e}", round_dir.display()));
-            }
-            println!(
-                "[{model}] round {round}: agent session starting (log: {})",
-                round_dir.join("session.log").display()
-            );
-            let session = run_agent_session(&args, contender, &prompt, &round_dir, &lease);
-            if let Some(e) = &session.error {
-                eprintln!("[{model}] round {round}: {e}");
-            }
-            if !session.usage.is_null() {
-                let usage = json!({
-                    "harness": contender.harness.name(),
-                    "model": contender.model,
-                    "input_tokens": session.usage.get("input_tokens"),
-                    "output_tokens": session.usage.get("output_tokens"),
-                    "cache_read_tokens": session.usage.get("cache_read_tokens"),
-                    "cost_usd": session.usage.get("cost_usd"),
-                    "num_turns": session.usage.get("num_turns"),
-                });
-                let _ = std::fs::create_dir_all(&round_dir);
-                if let Err(e) = write_json(&round_dir.join("usage.json"), &usage) {
-                    eprintln!("[{model}] round {round}: usage write failed: {e}");
-                }
-            }
-            match collect_round(&mut client, &args, &round_dir) {
-                Ok(report) => {
-                    let score = best_excitement(&report);
-                    println!(
-                        "[{model}] round {round}: excitement {}",
-                        score.map_or("unrated".into(), |s| format!("{s:.2}"))
-                    );
-                    if let Some(s) = score {
-                        if best.is_none_or(|(_, b)| s > b) {
-                            best = Some((round, s));
-                        }
-                    }
-                    feedback = serde_json::to_string(&report).ok();
-                }
-                Err(e) => {
-                    eprintln!("[{model}] round {round}: collect failed: {e}");
-                    feedback = Some(format!(
-                        "{{\"error\": \"round produced no rated ride: {e}\"}}"
-                    ));
-                }
-            }
-        }
-        standings.push(json!({
-            "model": model,
-            "harness": contender.harness.name(),
-            "best_excitement": best.map(|(_, s)| s),
-            "best_round": best.map(|(r, _)| r),
-        }));
+        standings.push(compete_on_park(
+            &args,
+            contender,
+            &mut client,
+            args.port,
+            &run_dir,
+            None,
+            true,
+        ));
     }
 
     standings.sort_by(|a, b| {
@@ -847,6 +967,283 @@ fn main() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Fans contenders out across generated scenario parks in waves of
+/// --concurrency: each wave slot is its own game server on port base+slot
+/// (ports are reused across waves, so the sandbox policy only needs
+/// `concurrency` consecutive ports). Contenders on the same park run
+/// sequentially — they share its server and its single game thread.
+fn run_multi_scenario(
+    args: &Args,
+    root: &Path,
+    contenders: &[Contender],
+    scenario_parks: &[ScenarioPark],
+    run_dir: &Path,
+) -> Result<(), String> {
+    let concurrency = args.concurrency.max(1);
+    println!(
+        "{} scenario park(s) in waves of {}; sandbox policy must allow ports {}-{}",
+        scenario_parks.len(),
+        concurrency,
+        args.port,
+        args.port + concurrency as u16 - 1
+    );
+    if concurrency > 1 {
+        println!(
+            "note: concurrent sessions share the sandboxes, so a timed-out session's \
+             stray agent is locked out by lease eviction rather than killed"
+        );
+    }
+
+    let mut outcomes: Vec<Value> = Vec::new();
+    for wave in scenario_parks.chunks(concurrency) {
+        let results: Vec<Result<Vec<Value>, String>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = wave
+                .iter()
+                .enumerate()
+                .map(|(slot, park)| {
+                    let port = args.port + slot as u16;
+                    scope.spawn(move || -> Result<Vec<Value>, String> {
+                        let _server = GameServer::spawn(args, root, &park.path, port)?;
+                        let mut client = mcp::McpClient::new("127.0.0.1", port);
+                        wait_for_server(&mut client, Duration::from_secs(120))?;
+                        println!("[{}] game server ready on port {port}", park.label);
+                        Ok(contenders
+                            .iter()
+                            .map(|contender| {
+                                compete_on_park(
+                                    args,
+                                    contender,
+                                    &mut client,
+                                    port,
+                                    run_dir,
+                                    Some(park),
+                                    concurrency == 1,
+                                )
+                            })
+                            .collect())
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|_| Err("scenario thread panicked".into()))
+                })
+                .collect()
+        });
+        for result in results {
+            match result {
+                Ok(mut entries) => outcomes.append(&mut entries),
+                // A dead park scores nothing for anyone; the aggregate treats
+                // its missing entries as zero, same as a park nobody solved.
+                Err(e) => eprintln!("scenario park failed: {e}"),
+            }
+        }
+    }
+
+    let mut standings: Vec<Value> = contenders
+        .iter()
+        .map(|contender| {
+            let model = contender.display();
+            let per_scenario: Vec<Value> = scenario_parks
+                .iter()
+                .map(|park| {
+                    outcomes
+                        .iter()
+                        .find(|o| {
+                            o["model"].as_str() == Some(model.as_str())
+                                && o["scenario"].as_str() == Some(park.label.as_str())
+                        })
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            json!({
+                                "model": model,
+                                "scenario": park.label,
+                                "best_excitement": null,
+                                "best_round": null,
+                            })
+                        })
+                })
+                .collect();
+            // A park with no rated coaster scores zero: the aggregate measures
+            // reliability across parks, not just the parks that went well.
+            let mut bests: Vec<f64> = per_scenario
+                .iter()
+                .map(|p| p["best_excitement"].as_f64().unwrap_or(0.0))
+                .collect();
+            let mean = bests.iter().sum::<f64>() / bests.len().max(1) as f64;
+            bests.sort_by(f64::total_cmp);
+            let median = match bests.len() {
+                0 => 0.0,
+                n if n % 2 == 1 => bests[n / 2],
+                n => (bests[n / 2 - 1] + bests[n / 2]) / 2.0,
+            };
+            json!({
+                "model": model,
+                "harness": contender.harness.name(),
+                "aggregate": {
+                    "mean_best_excitement": mean,
+                    "median_best_excitement": median,
+                    "scenarios_scored": per_scenario
+                        .iter()
+                        .filter(|p| p["best_excitement"].as_f64().unwrap_or(0.0) > 0.0)
+                        .count(),
+                    "scenarios_total": scenario_parks.len(),
+                },
+                "per_scenario": per_scenario,
+            })
+        })
+        .collect();
+    standings.sort_by(|a, b| {
+        let mean = |v: &Value| {
+            v.pointer("/aggregate/mean_best_excitement")
+                .and_then(Value::as_f64)
+                .unwrap_or(-1.0)
+        };
+        mean(b)
+            .partial_cmp(&mean(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    write_json(
+        &run_dir.join("standings.json"),
+        &json!({
+            "scenarios": scenario_parks.iter().map(|p| p.label.clone()).collect::<Vec<_>>(),
+            "standings": standings,
+        }),
+    )?;
+
+    println!("\n=== FINAL STANDINGS (aggregate over scenarios) ===");
+    for (place, entry) in standings.iter().enumerate() {
+        let model = entry["model"].as_str().unwrap_or("?");
+        let agg = &entry["aggregate"];
+        println!(
+            "{}. {model}: mean best excitement {:.2} (median {:.2}, scored {}/{} parks)",
+            place + 1,
+            agg["mean_best_excitement"].as_f64().unwrap_or(0.0),
+            agg["median_best_excitement"].as_f64().unwrap_or(0.0),
+            agg["scenarios_scored"].as_u64().unwrap_or(0),
+            agg["scenarios_total"].as_u64().unwrap_or(0),
+        );
+    }
+    Ok(())
+}
+
+/// One contender's full set of rounds on one park. Returns the standings
+/// entry: {model, harness, scenario?, best_excitement, best_round}.
+///
+/// `kill_on_timeout` must be false whenever another session might share the
+/// contender's sandbox (concurrent scenario parks): the timeout sweep kills
+/// every agent process in the sandbox, not just this session's.
+fn compete_on_park(
+    args: &Args,
+    contender: &Contender,
+    client: &mut mcp::McpClient,
+    port: u16,
+    run_dir: &Path,
+    scenario: Option<&ScenarioPark>,
+    kill_on_timeout: bool,
+) -> Value {
+    let model = contender.display();
+    let tag = match scenario {
+        Some(s) => format!("{model} @ {}", s.label),
+        None => model.clone(),
+    };
+    let mut best: Option<(u32, f64)> = None;
+    let mut feedback: Option<String> = None;
+    for round in 1..=args.rounds {
+        // One lease per round: claiming it evicts any agent still alive
+        // from an earlier round, which would otherwise build in this park.
+        let lease = format!("{tag}-r{round}-{}", epoch_secs()).replace([' ', '@'], "_");
+        client.claim("127.0.0.1", port, &lease);
+        // A fresh park state for every round.
+        let _ = client.call("demolish", json!({}));
+        let prompt = prompt::round_prompt(
+            args.ride_type,
+            round,
+            args.rounds,
+            feedback.as_deref(),
+            contender.modalities,
+            args.session_timeout,
+            scenario.map(|s| s.map_line.as_str()),
+        );
+        // Created up front: the session streams its logs in here while it
+        // runs, so `tail -f` works on a round in progress.
+        let mut round_dir = run_dir.join(&model);
+        if let Some(s) = scenario {
+            round_dir = round_dir.join(&s.label);
+        }
+        round_dir = round_dir.join(format!("round_{round}"));
+        if let Err(e) = std::fs::create_dir_all(&round_dir) {
+            eprintln!("[{tag}] round {round}: create {}: {e}", round_dir.display());
+            continue;
+        }
+        println!(
+            "[{tag}] round {round}: agent session starting (log: {})",
+            round_dir.join("session.log").display()
+        );
+        let session = run_agent_session(
+            args,
+            contender,
+            port,
+            &prompt,
+            &round_dir,
+            &lease,
+            kill_on_timeout,
+        );
+        if let Some(e) = &session.error {
+            eprintln!("[{tag}] round {round}: {e}");
+        }
+        if !session.usage.is_null() {
+            let usage = json!({
+                "harness": contender.harness.name(),
+                "model": contender.model,
+                "input_tokens": session.usage.get("input_tokens"),
+                "output_tokens": session.usage.get("output_tokens"),
+                "cache_read_tokens": session.usage.get("cache_read_tokens"),
+                "cost_usd": session.usage.get("cost_usd"),
+                "num_turns": session.usage.get("num_turns"),
+            });
+            let _ = std::fs::create_dir_all(&round_dir);
+            if let Err(e) = write_json(&round_dir.join("usage.json"), &usage) {
+                eprintln!("[{tag}] round {round}: usage write failed: {e}");
+            }
+        }
+        match collect_round(client, args, &round_dir) {
+            Ok(report) => {
+                let score = best_excitement(&report);
+                println!(
+                    "[{tag}] round {round}: excitement {}",
+                    score.map_or("unrated".into(), |s| format!("{s:.2}"))
+                );
+                if let Some(s) = score {
+                    if best.is_none_or(|(_, b)| s > b) {
+                        best = Some((round, s));
+                    }
+                }
+                feedback = serde_json::to_string(&report).ok();
+            }
+            Err(e) => {
+                eprintln!("[{tag}] round {round}: collect failed: {e}");
+                feedback = Some(format!(
+                    "{{\"error\": \"round produced no rated ride: {e}\"}}"
+                ));
+            }
+        }
+    }
+    let mut entry = json!({
+        "model": model,
+        "harness": contender.harness.name(),
+        "best_excitement": best.map(|(_, s)| s),
+        "best_round": best.map(|(r, _)| r),
+    });
+    if let Some(s) = scenario {
+        entry["scenario"] = json!(s.label);
+    }
+    entry
 }
 
 #[cfg(test)]
@@ -894,6 +1291,39 @@ mod tests {
             "text,file"
         );
         assert!(!Modalities::TEXT.contains(Modalities::IMAGE));
+    }
+
+    #[test]
+    fn hints_render_the_anchor_terrain_and_water() {
+        let hints = json!({
+            "map_size": 100,
+            "playable": {"min": 1, "max": 98},
+            "hilliness": 5,
+            "water_fraction": 0.23,
+            "surface_z": {"min": 112, "max": 240},
+            "start": {"x": 58, "y": 17, "surface_z": 128, "open_square": 15},
+        });
+        let line = map_line_from_hints(&hints);
+        assert!(line.contains("100x100 tiles (playable 1-98"));
+        assert!(line.contains("15x15-tile dry square centred on tile (58, 17)"));
+        assert!(line.contains("hilly"));
+        assert!(line.contains("112-240 z-units"));
+        assert!(line.contains("23% of the map is under water"));
+    }
+
+    #[test]
+    fn flat_dry_hints_stay_quiet_about_terrain_and_water() {
+        let hints = json!({
+            "map_size": 100,
+            "playable": {"min": 1, "max": 98},
+            "hilliness": 0,
+            "water_fraction": 0.0,
+            "surface_z": {"min": 112, "max": 112},
+            "start": {"x": 50, "y": 50, "surface_z": 112, "open_square": 31},
+        });
+        let line = map_line_from_hints(&hints);
+        assert!(line.contains("entirely flat"));
+        assert!(!line.contains("under water"));
     }
 
     #[test]
