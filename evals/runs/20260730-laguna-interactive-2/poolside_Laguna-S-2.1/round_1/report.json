@@ -1,0 +1,99 @@
+{
+ "bounds": {
+  "max_tile_x": 254,
+  "max_tile_y": 254,
+  "max_z": 1136,
+  "min_tile_x": 45,
+  "min_tile_y": 60,
+  "min_z": 112
+ },
+ "placed_pieces": [
+  "begin_station",
+  "middle_station",
+  "end_station",
+  {
+   "chain": true,
+   "t": "flat_to_up_25"
+  },
+  {
+   "chain": true,
+   "t": "up_25"
+  },
+  {
+   "chain": true,
+   "t": "up_25"
+  },
+  "up_25_to_flat",
+  "flat",
+  "flat_to_down_25",
+  "down_25",
+  "down_25",
+  "down_25_to_flat",
+  "flat",
+  "right_turn_5",
+  "flat",
+  "flat",
+  "right_turn_5",
+  "flat",
+  "flat",
+  "flat",
+  "flat",
+  "flat",
+  "flat",
+  "flat",
+  "flat",
+  "flat",
+  "flat",
+  "flat",
+  "flat",
+  "right_turn_5",
+  "flat",
+  "flat",
+  "flat",
+  "right_turn_3"
+ ],
+ "program": {
+  "ok": true,
+  "pieces_placed": 34,
+  "pieces_total": 34
+ },
+ "rides": [
+  {
+   "average_speed": 368959,
+   "circuit": {
+    "looped": true,
+    "orphan_pieces": 0,
+    "total_pieces": 34,
+    "walked_pieces": 34
+   },
+   "crashed": false,
+   "excitement": 0.6299999952316284,
+   "highest_drop": 6,
+   "id": 100,
+   "intensity": 0.3199999928474426,
+   "max_lateral_g": 1.350000023841858,
+   "max_negative_g": 0.49000000953674316,
+   "max_positive_g": 1.8600000143051147,
+   "max_speed": 665079,
+   "nausea": 0.1599999964237213,
+   "num_drops": 1,
+   "num_inversions": 0,
+   "ride_length": 193,
+   "ride_time": 26,
+   "ride_type": 51,
+   "status": "testing",
+   "tested": true,
+   "total_air_time": 0
+  }
+ ],
+ "score": 0.6299999952316284,
+ "similarity": null,
+ "start": {
+  "bank": 0,
+  "dir": 0,
+  "slope": 0,
+  "x": 60,
+  "y": 60,
+  "z": 112
+ }
+}

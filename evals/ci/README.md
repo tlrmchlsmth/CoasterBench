@@ -110,3 +110,18 @@ because they are exactly the failure classes this job exists to surface:
    defaults** (vLLM warns but serves): Qwen ships temp 0.7 / top-p 0.8 /
    rep-penalty 1.05, so "default" runs are not the sampling you assumed.
    Pin `--generation-config vllm` for vLLM defaults.
+5. **Parser gap — compact tool-call text silently unparsed** (`poolside_v1`,
+   Laguna-S-2.1, interactive mode, 2026-07-30): mid-session the model
+   emitted `<tool_call>undo_piece()<tool_call>undo_piece()...` — a compact
+   repeated-call syntax — as assistant text; the parser produced zero
+   `tool_calls`, so the turn looked like the model choosing to stop.
+   Three "voluntary" early stops in one run were actually this. The
+   interactive driver now detects literal `<tool_call>` text in a callless
+   reply and asks the model to re-issue the call properly. Related: text
+   content from this parser arrives prefixed with stray `</think>` tags.
+6. **thinking_token_budget needs `--reasoning-config`** (vLLM 0.25.1): with
+   only `--reasoning-parser poolside_v1` the request is rejected 400
+   ("reasoning_config is not configured"). Interactive mode mostly does not
+   need the budget — short tool turns terminate thinking — but geometry
+   planning turns can still blow a 16k completion cap; 32k stopped the
+   truncations for Laguna.

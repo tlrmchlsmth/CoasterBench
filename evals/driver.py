@@ -1199,23 +1199,46 @@ def compete_interactive(
                 tool_uses = [b for b in response.content if b.type == "tool_use"]
                 if not tool_uses:
                     cut_off = getattr(response, "stop_reason", "end_turn") == "max_tokens"
+                    # Tool calls the server's parser missed arrive as literal
+                    # "<tool_call>..." text (observed with Laguna emitting a
+                    # compact "<tool_call>undo_piece()" syntax poolside_v1
+                    # does not parse) — that is a stall, not a decision.
+                    unparsed = any(
+                        b.type == "text" and "<tool_call>" in (b.text or "") for b in response.content
+                    )
                     # Stopping with nothing banked wastes the round (observed:
                     # Laguna quit at 11 turns with an open circuit; another
                     # round died to a completion cut off mid-thought). Send it
                     # back to work while budget remains, a few times at most.
-                    if (cut_off or not banked) and nudges < 3 and turns < max_turns - 2:
+                    if (cut_off or unparsed or not banked) and nudges < 3 and turns < max_turns - 2:
                         nudges += 1
-                        why = "cut off mid-response" if cut_off else "stopped with no banked score"
-                        print(f"  [{tag}] r{rnd}: model {why}; nudge {nudges}/3", flush=True)
-                        nudge = (
-                            "Your reply was cut off by the token limit before any tool call. "
-                            "Keep your reasoning brief and make a tool call now."
+                        why = (
+                            "cut off mid-response"
                             if cut_off
-                            else "You have NO tested coaster banked yet, so stopping now scores zero. "
-                            "You still have turns left. Check get_state: if the circuit is open, plan the "
-                            "return leg with piece_geometry and close it, then call finish_and_test. "
-                            "Continue building now."
+                            else "emitted unparsed tool-call text"
+                            if unparsed
+                            else "stopped with no banked score"
                         )
+                        print(f"  [{tag}] r{rnd}: model {why}; nudge {nudges}/3", flush=True)
+                        if cut_off:
+                            nudge = (
+                                "Your reply was cut off by the token limit before any tool call. "
+                                "Keep your reasoning brief and make a tool call now."
+                            )
+                        elif unparsed:
+                            nudge = (
+                                "Your tool calls came through as plain text and were NOT executed. "
+                                "Use the proper tool-calling mechanism (one JSON tool call at a time, "
+                                "with an arguments object), not inline '<tool_call>name()' text. "
+                                "Re-issue your last intended call now."
+                            )
+                        else:
+                            nudge = (
+                                "You have NO tested coaster banked yet, so stopping now scores zero. "
+                                "You still have turns left. Check get_state: if the circuit is open, plan the "
+                                "return leg with piece_geometry and close it, then call finish_and_test. "
+                                "Continue building now."
+                            )
                         messages.append({"role": "user", "content": nudge})
                         continue
                     break

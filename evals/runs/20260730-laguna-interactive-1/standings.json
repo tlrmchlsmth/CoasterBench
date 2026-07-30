@@ -1,0 +1,28 @@
+{
+  "mode": "design",
+  "standings": [
+    {
+      "model": "poolside/Laguna-S-2.1",
+      "best_excitement": null,
+      "best_raw_excitement": null,
+      "best_similarity": null,
+      "attempts": [
+        {
+          "round": 1,
+          "summary": "BUILD FAILED (11/11 placed): finish_and_test: set_status(testing): Track is not a complete circuit [track starts at {\"bank\":0,\"dir\":0,\"slope\":0,\"x\":60,\"y\":60,\"z\":112} and currently ends at {\"bank\":0,\"dir\":0,\"slope\":0,\"x\":49,\"y\":60,\"z\":112}; a closed circuit requires these to match]",
+          "lookups": []
+        },
+        {
+          "round": 2,
+          "summary": "BUILD FAILED (0/0 placed): finish_and_test: track has no station pieces; entrance cannot be placed",
+          "lookups": []
+        },
+        {
+          "round": 3,
+          "summary": "BUILD FAILED (9/9 placed): finish_and_test: set_status(testing): Track is not a complete circuit [track starts at {\"bank\":0,\"dir\":2,\"slope\":0,\"x\":60,\"y\":60,\"z\":112} and currently ends at {\"bank\":0,\"dir\":2,\"slope\":0,\"x\":69,\"y\":60,\"z\":160}; a closed circuit requires these to match]",
+          "lookups": []
+        }
+      ]
+    }
+  ]
+}

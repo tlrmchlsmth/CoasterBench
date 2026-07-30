@@ -1,0 +1,13 @@
+{
+ "program": {
+  "ok": false,
+  "pieces_placed": 0,
+  "pieces_total": 0,
+  "error": {
+   "piece_index": null,
+   "message": "finish_and_test: track has no station pieces; entrance cannot be placed"
+  }
+ },
+ "rides": [],
+ "similarity": null
+}

@@ -1,0 +1,28 @@
+{
+  "mode": "design",
+  "standings": [
+    {
+      "model": "poolside/Laguna-S-2.1",
+      "best_excitement": 0.6299999952316284,
+      "best_raw_excitement": 0.6299999952316284,
+      "best_similarity": 0.0,
+      "attempts": [
+        {
+          "round": 1,
+          "summary": "excitement=0.6299999952316284 intensity=0.3199999928474426 nausea=0.1599999964237213 tested=True crashed=False length=193 drops=1 airtime=0",
+          "lookups": []
+        },
+        {
+          "round": 2,
+          "summary": "BUILD FAILED (42/42 placed): finish_and_test: set_status(testing): Track is not a complete circuit [track starts at {\"bank\":0,\"dir\":0,\"slope\":0,\"x\":60,\"y\":60,\"z\":112} and currently ends at {\"bank\":0,\"dir\":0,\"slope\":0,\"x\":60,\"y\":62,\"z\":112}; a closed circuit requires these to match]",
+          "lookups": []
+        },
+        {
+          "round": 3,
+          "summary": "excitement=0.30000001192092896 intensity=0.11999999731779099 nausea=0.05999999865889549 tested=True crashed=False length=157 drops=1 airtime=0",
+          "lookups": []
+        }
+      ]
+    }
+  ]
+}

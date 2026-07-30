@@ -3,6 +3,40 @@
 Behavioural observations from CoasterBench runs. Each entry is dated and cites
 the run it came from, so a claim can be checked against the artifacts.
 
+## Laguna-S-2.1 in the interactive driver lane (2026-07-30)
+
+**Runs:** `20260730-laguna-interactive-{1,2,3}` (driver-mcp harness, vLLM
+0.25.1 on the pirate B200 cluster, ride type 51, no-graphics, 3 rounds each).
+
+One-shot design prompts were already known to be hopeless for Laguna (its
+thinking never terminates; see evals/ci/README.md finding 3). The interactive
+per-piece lane works where one-shot did not — but only after three driver-side
+recoveries, each worth zero-to-something on its own:
+
+| Run | Driver behaviour | Rounds scored | Best |
+| --- | --- | --- | --- |
+| 1 | plain loop, 16k completion cap | 0/3 | — |
+| 2 | + nudges on unbanked stop / mid-think cutoff | 2/3 | 0.63 |
+| 3 | + 32k cap (cutoffs gone; unparsed-call stalls exposed) | in progress | — |
+
+The three stall modes, all observed in transcripts:
+
+1. **Mid-think truncation looks like stopping.** A geometry-planning turn can
+   burn a 16k completion cap while still thinking; the reply has no tool call
+   and a naive loop scores the round zero. Detect `finish_reason: length` and
+   nudge; 32k made these rare.
+2. **Voluntary early stop with an open circuit.** Laguna quits, far under
+   budget, without calling finish_and_test. The nudge ("stopping now scores
+   zero; close the circuit") sent it from 11-turn giveups to 44-turn builds.
+3. **Unparsed compact tool-call syntax.** It emits
+   `<tool_call>undo_piece()<tool_call>undo_piece()...` as text; poolside_v1
+   parses zero calls out of that, which is indistinguishable from a decision
+   to stop unless the driver looks for literal `<tool_call>` in the text.
+
+Consequence for scoring fairness: these stalls are harness/protocol artifacts,
+not design ability. A lane that does not recover from them measures the
+parser, not the model.
+
 ## kimi-k3 does not end a round on its own (2026-07-24)
 
 **Run:** `20260724-kimi-k3-twister` (opencode / OpenRouter, ride type 51).
