@@ -1,0 +1,253 @@
+{
+  "bounds": {
+    "max_tile_x": 64,
+    "max_tile_y": 95,
+    "max_z": 376,
+    "min_tile_x": 21,
+    "min_tile_y": 61,
+    "min_z": 112
+  },
+  "placed_pieces": [
+    "begin_station",
+    "middle_station",
+    "middle_station",
+    "middle_station",
+    "end_station",
+    "flat_to_up_25",
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    "up_25_to_flat",
+    "flat",
+    "flat",
+    "right_turn_3",
+    "flat",
+    "flat_to_down_60",
+    "down_60",
+    "down_60",
+    "down_60",
+    "down_60_to_flat",
+    {
+      "speed": 20,
+      "t": "brakes"
+    },
+    "flat_to_up_25",
+    "left_vertical_loop",
+    "down_25_to_flat",
+    {
+      "speed": 22,
+      "t": "booster"
+    },
+    "flat_to_up_25",
+    "right_vertical_loop",
+    "down_25_to_flat",
+    {
+      "speed": 20,
+      "t": "brakes"
+    },
+    "flat_to_up_25",
+    "left_vertical_loop",
+    "down_25_to_flat",
+    {
+      "speed": 22,
+      "t": "booster"
+    },
+    "flat_to_up_25",
+    "right_vertical_loop",
+    "down_25_to_flat",
+    "flat_to_right_bank",
+    "banked_right_turn_5",
+    "right_bank_to_flat",
+    "flat_to_up_25",
+    "up_25",
+    "up_25",
+    "up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25",
+    "down_25",
+    "down_25",
+    "down_25_to_flat",
+    "left_corkscrew_up",
+    "right_corkscrew_down",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat_to_up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25_to_flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat_to_right_bank",
+    "right_bank",
+    "banked_right_turn_3",
+    "right_bank",
+    "right_bank_to_flat",
+    {
+      "speed": 18,
+      "t": "booster"
+    },
+    "flat_to_up_25",
+    "up_25",
+    "up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25",
+    "down_25",
+    "down_25_to_flat",
+    {
+      "speed": 30,
+      "t": "booster"
+    },
+    "flat_to_left_bank",
+    "left_helix_up_large",
+    "left_helix_up_large",
+    "left_helix_up_large",
+    "left_helix_up_large",
+    "left_helix_up_large",
+    "left_helix_up_large",
+    "left_helix_up_large",
+    "left_helix_up_large",
+    "left_helix_up_large",
+    "left_helix_up_large",
+    "left_bank_to_flat",
+    "flat_to_right_bank",
+    "right_helix_down_large",
+    "right_helix_down_small",
+    "right_helix_down_large",
+    "right_helix_down_small",
+    "right_helix_down_large",
+    "right_helix_down_small",
+    "right_helix_down_large",
+    "right_helix_down_small",
+    "right_helix_down_large",
+    "right_helix_down_small",
+    "right_bank_to_flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "right_turn_3",
+    "flat"
+  ],
+  "program": null,
+  "rides": [
+    {
+      "average_speed": 559016,
+      "circuit": {
+        "looped": true,
+        "orphan_pieces": 0,
+        "total_pieces": 134,
+        "walked_pieces": 134
+      },
+      "crashed": false,
+      "excitement": 7.809999942779541,
+      "highest_drop": 29,
+      "id": 0,
+      "intensity": 9.989999771118164,
+      "max_lateral_g": 2.809999942779541,
+      "max_negative_g": -0.9100000262260436,
+      "max_positive_g": 4.550000190734863,
+      "max_speed": 1407665,
+      "nausea": 7.329999923706055,
+      "num_drops": 9,
+      "num_inversions": 5,
+      "ride_length": 1375,
+      "ride_time": 123,
+      "ride_type": 51,
+      "status": "testing",
+      "tested": true,
+      "total_air_time": 37
+    }
+  ],
+  "score": 7.809999942779541,
+  "similarity": {
+    "common_substring_share": 0.12686567164179105,
+    "edit_similarity": 0.2890173410404624,
+    "mirrored": false,
+    "nearest_design": "Slippery Seals",
+    "nearest_ride_type": 19,
+    "similarity": 0.2890173410404624
+  },
+  "start": {
+    "bank": 0,
+    "dir": 2,
+    "slope": 0,
+    "x": 39,
+    "y": 95,
+    "z": 112
+  }
+}

@@ -1,0 +1,162 @@
+{
+  "pieces": [
+    "begin_station",
+    "middle_station",
+    "middle_station",
+    "end_station",
+    {
+      "chain": true,
+      "t": "flat_to_up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25_to_flat"
+    },
+    "flat_to_down_25",
+    "down_25_to_down_60",
+    "down_60",
+    "down_60",
+    "down_60_to_down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "left_vertical_loop",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25",
+    "up_25",
+    "up_25_to_flat",
+    "left_corkscrew_up",
+    "left_corkscrew_down",
+    "flat_to_down_25",
+    "down_25",
+    "down_25_to_flat",
+    "flat_to_up_60",
+    "up_60_to_flat",
+    "flat_to_down_60",
+    "down_60_to_flat",
+    "flat_to_up_25",
+    "right_vertical_loop",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25_to_up_60",
+    "up_60_to_flat",
+    "flat_to_down_60",
+    "down_60_to_down_25",
+    "down_25_to_flat",
+    "right_corkscrew_up",
+    "right_corkscrew_down",
+    "flat_to_up_25",
+    "up_25_to_up_60",
+    "up_60_to_flat",
+    "flat_to_down_60",
+    "down_60_to_down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "left_vertical_loop",
+    "down_25_to_flat",
+    "left_corkscrew_up",
+    "left_corkscrew_down",
+    "flat_to_down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25_to_up_60",
+    "up_60_to_flat",
+    "flat_to_down_60",
+    "down_60_to_down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25_to_flat",
+    "left_turn_5",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat_to_up_25",
+    "up_25_to_flat",
+    "flat_to_up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25",
+    "down_25_to_flat",
+    "flat_to_right_bank",
+    "banked_right_turn_3",
+    "right_bank_to_flat",
+    "s_bend_right",
+    "right_turn_5",
+    "right_turn_5",
+    "flat",
+    "flat",
+    "flat"
+  ],
+  "ride_type": 51,
+  "start": {
+    "dir": 0,
+    "x": 60,
+    "y": 60
+  }
+}

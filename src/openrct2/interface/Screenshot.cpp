@@ -629,13 +629,20 @@ static std::string ResolveFilenameForCapture(const fs::path& filename)
     return screenshotPath.u8string();
 }
 
-void CaptureImage(const CaptureOptions& options)
+// Shared by CaptureImage and CaptureImageToBuffer: everything up to the point
+// where one writes a file and the other keeps the pixels.
+static Viewport ViewportForCapture(const CaptureOptions& options)
 {
     Viewport viewport{};
     if (options.View.has_value())
     {
-        viewport.width = options.View->Width;
-        viewport.height = options.View->Height;
+        // CaptureView dimensions describe the world-space extent to frame.
+        // Viewport dimensions are screen pixels, so zoom must reduce them;
+        // ViewWidth/ViewHeight apply the zoom again while rendering. Keeping
+        // the unscaled dimensions here made non-zero-zoom buffer captures
+        // larger than orct2_host_capture_size reported, yielding zero frames.
+        viewport.width = options.Zoom.ApplyInversedTo(options.View->Width);
+        viewport.height = options.Zoom.ApplyInversedTo(options.View->Height);
 
         auto z = TileElementHeight(options.View->Position);
         CoordsXYZ coords3d(options.View->Position, z);
@@ -655,6 +662,41 @@ void CaptureImage(const CaptureOptions& options)
         viewport.flags |= VIEWPORT_FLAG_TRANSPARENT_BACKGROUND;
     }
     viewport.flags |= options.ViewFlags;
+    return viewport;
+}
+
+bool CaptureImageToBuffer(const CaptureOptions& options, std::vector<uint8_t>& outRgba, int32_t& outWidth, int32_t& outHeight)
+{
+    auto viewport = ViewportForCapture(options);
+    auto rt = CreateRT(viewport);
+    RenderViewport(nullptr, viewport, rt);
+
+    outWidth = rt.width;
+    outHeight = rt.height;
+    outRgba.resize(static_cast<size_t>(rt.width) * rt.height * 4);
+    // The software renderer works in 8-bit palette indices; the palette lookup
+    // is the whole conversion.
+    const auto stride = rt.width + rt.pitch;
+    for (int32_t y = 0; y < rt.height; y++)
+    {
+        const auto* src = rt.bits + static_cast<size_t>(y) * stride;
+        auto* dst = outRgba.data() + static_cast<size_t>(y) * rt.width * 4;
+        for (int32_t x = 0; x < rt.width; x++)
+        {
+            const auto& colour = gPalette[static_cast<size_t>(EnumValue(src[x]))];
+            dst[x * 4 + 0] = colour.red;
+            dst[x * 4 + 1] = colour.green;
+            dst[x * 4 + 2] = colour.blue;
+            dst[x * 4 + 3] = 255;
+        }
+    }
+    ReleaseRT(rt);
+    return outWidth > 0 && outHeight > 0;
+}
+
+void CaptureImage(const CaptureOptions& options)
+{
+    auto viewport = ViewportForCapture(options);
 
     auto outputPath = ResolveFilenameForCapture(options.Filename);
     auto rt = CreateRT(viewport);

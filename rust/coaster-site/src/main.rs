@@ -7,6 +7,9 @@
 
 mod art;
 mod chart;
+mod dna;
+mod fonts;
+mod geometry;
 mod images;
 mod model;
 mod view;
@@ -18,10 +21,10 @@ use askama::Template;
 use clap::Parser;
 
 use art::{Art, ArtStore};
-use model::{EvalRun, ModelRun, Round};
+use model::{Circuit, EvalRun, ModelRun, Round};
 use view::{
-    Badge, Chrome, Facet, Figure, IndexPage, IndexRow, LibraryPage, ModelPage, ModelView,
-    RoundStats, RoundView, RunPage, Shot, StandingRow, Stat,
+    Badge, Chrome, Facet, Figure, IndexBoard, IndexGroup, IndexPage, IndexRow, LibraryPage,
+    ModelPage, ModelView, RoundStats, RoundView, RunPage, Shot, StandingRow, Stat, Swatch,
 };
 
 #[derive(Parser)]
@@ -39,9 +42,10 @@ struct Args {
     /// Manifest of previews uploaded to the artifact store.
     #[arg(long, default_value = "evals/library-previews.json")]
     previews_manifest: PathBuf,
-    /// Public URL the site deploys to; required for Slack unfurl images,
-    /// which must be absolute URLs. Pass an empty string to omit them.
-    #[arg(long, default_value = "https://wseaton.github.io/CoasterBench")]
+    /// Canonical public URL. The site is published to two hosts (Cloudflare
+    /// Pages and GitHub Pages); this is the one they both point at, and the one
+    /// Slack unfurls resolve against. Pass an empty string to omit both.
+    #[arg(long, default_value = "https://coasterbench.wseaton.com")]
     base_url: String,
     /// Public URL of the R2 artifact store holding screenshots not present
     /// locally (see evals/publish.py).
@@ -50,6 +54,19 @@ struct Args {
     /// Render runs that never finished (some model short of its rounds).
     #[arg(long)]
     include_partial: bool,
+    /// Render runs withdrawn with `"published": false` in run.json.
+    #[arg(long)]
+    include_unpublished: bool,
+    /// Ask Cloudflare to resize artifact-store images at the edge instead of
+    /// serving them whole (`/cdn-cgi/image/...`). Needs image transformations
+    /// enabled on the zone; without that, every transformed URL 404s.
+    #[arg(long)]
+    cf_images: bool,
+    /// Point every published artifact at the artifact store instead of copying
+    /// the local file in. Keeps a preview deploy to HTML (the artifacts run to
+    /// hundreds of megabytes) and matches what CI builds.
+    #[arg(long)]
+    remote_artifacts: bool,
 }
 
 fn place_label(place: usize) -> String {
@@ -163,6 +180,54 @@ fn round_badge(round: &Round, stats: Option<&RoundStats>) -> Option<Badge> {
     }
 }
 
+/// Chip reporting the circuit audit. Ratings already prove the ridden loop is
+/// closed and completes, so what this adds is the other half: whether anything
+/// in the screenshot is track no train ever touches.
+fn circuit_badge(circuit: Option<&Circuit>) -> Option<Badge> {
+    let circuit = circuit?;
+    let badge = |text: String, class: &str| {
+        Some(Badge {
+            text,
+            class: class.to_string(),
+        })
+    };
+    if circuit.orphan_pieces > 0 {
+        return badge(
+            format!(
+                "{} of {} pieces off the circuit",
+                circuit.orphan_pieces, circuit.total_pieces
+            ),
+            "badge-warn",
+        );
+    }
+    if !circuit.looped {
+        return badge("circuit never closed".to_string(), "badge-warn");
+    }
+    badge(
+        format!("verified circuit ({} pieces)", circuit.walked_pieces),
+        "badge-ok",
+    )
+}
+
+fn presentation_view(presentation: Option<&model::Presentation>) -> Option<view::Presentation> {
+    let presentation = presentation?;
+    let swatch = |name: &str| Swatch {
+        name: name.replace('_', " "),
+        class: format!(
+            "swatch-{}",
+            name.chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect::<String>()
+        ),
+    };
+    Some(view::Presentation {
+        name: presentation.name.clone(),
+        track: swatch(&presentation.track_color),
+        rail: swatch(&presentation.rail_color),
+        support: swatch(&presentation.support_color),
+    })
+}
+
 fn lookups_line(round: &Round) -> Option<String> {
     if round.lookups.is_empty() {
         return None;
@@ -181,9 +246,121 @@ fn lookups_line(round: &Round) -> Option<String> {
     Some(line)
 }
 
+/// Any published artifact URL, for the edge-resize preflight.
+fn first_artifact_url(runs: &[EvalRun]) -> Option<String> {
+    runs.iter()
+        .flat_map(|run| run.models.iter())
+        .flat_map(|model| model.rounds.iter())
+        .filter_map(|round| round.screenshot.as_ref())
+        .find_map(|art| art.url.clone())
+}
+
+/// Where a derived display copy lives. Used by both the pre-pass and the render,
+/// so they cannot disagree about the path.
+fn display_rel(run: &EvalRun, model: &str, round: u32, art_name: &str) -> PathBuf {
+    let stem = art_name.rsplit_once('.').map_or(art_name, |(stem, _)| stem);
+    Path::new("assets")
+        .join(&run.name)
+        .join(model)
+        .join(format!("round_{round}_{stem}.jpg"))
+}
+
+/// Every display copy the site needs: each round's first capture and each
+/// replay's poster. Everything else is behind a click, at full resolution.
+/// Cards render at ~500 CSS px, so this covers a 2x screen.
+const DISPLAY_WIDTH: u32 = 1200;
+
+fn derive_jobs(runs: &[EvalRun], out: &Path) -> Vec<(PathBuf, PathBuf, u32)> {
+    let mut jobs = Vec::new();
+    for run in runs {
+        for model in &run.models {
+            for round in &model.rounds {
+                let mut want = Vec::new();
+                if let Some(art) = round.screenshot.as_ref() {
+                    want.push(art);
+                }
+                if let Some(art) = round.replay_poster.as_ref() {
+                    want.push(art);
+                }
+                for art in want {
+                    // Only what is on disk: downloading 300 artifacts just to
+                    // shrink them took the build from seconds to ten minutes.
+                    // Remote ones resize at the edge (--cf-images) instead.
+                    let Some(src) = art.local.clone() else {
+                        continue;
+                    };
+                    let rel = display_rel(run, &model.model, round.number, &art.name);
+                    jobs.push((src, out.join(rel), DISPLAY_WIDTH));
+                }
+            }
+        }
+    }
+    jobs
+}
+
+/// A round's poster frame, downscaled and re-encoded into the site. None when
+/// the round has no replay still, or when its pixels could not be fetched.
+fn poster(
+    round: &Round,
+    out: &Path,
+    run: &EvalRun,
+    model: &str,
+    store: &ArtStore,
+) -> Result<Option<String>> {
+    let Some(art) = round.replay_poster.as_ref() else {
+        return Ok(None);
+    };
+    Ok(derived_or_edge(art, run, model, round.number, out, store))
+}
+
+/// The derived copy, else an edge-resized URL, else the artifact itself. That
+/// last fallback matters: a CI build has no local artifacts to derive from, and
+/// returning nothing there left the hero with no poster at all.
+fn derived_or_edge(
+    art: &Art,
+    run: &EvalRun,
+    model: &str,
+    round: u32,
+    out: &Path,
+    store: &ArtStore,
+) -> Option<String> {
+    let rel = display_rel(run, model, round, &art.name);
+    if out.join(&rel).is_file() {
+        return Some(rel.to_string_lossy().replace('\\', "/"));
+    }
+    store
+        .resized_url(art, DISPLAY_WIDTH)
+        .or_else(|| art.url.clone())
+}
+
+/// Copies a round artifact into the site under a run/model/round path. Shared by
+/// the model view and the index hero, so both point at one file.
+fn round_asset(
+    art: Option<&Art>,
+    out: &Path,
+    run: &EvalRun,
+    model: &str,
+    round: u32,
+) -> Result<Option<String>> {
+    let Some(art) = art else {
+        return Ok(None);
+    };
+    let rel = Path::new("assets")
+        .join(&run.name)
+        .join(model)
+        .join(format!("round_{round}_{}", art.name));
+    place_art(art, out, &rel)
+}
+
 /// Every capture of a round, in rotator order: the main view, extra rotations,
 /// then the x-ray.
-fn round_shots(round: &Round, out: &Path, run: &EvalRun, model: &str) -> Result<Vec<Shot>> {
+fn round_shots(
+    round: &Round,
+    out: &Path,
+    run: &EvalRun,
+    model: &str,
+    store: &ArtStore,
+) -> Result<Vec<Shot>> {
     let mut arts: Vec<(&Art, String)> = Vec::new();
     if let Some(shot) = &round.screenshot {
         arts.push((shot, "view 1".to_string()));
@@ -210,9 +387,28 @@ fn round_shots(round: &Round, out: &Path, run: &EvalRun, model: &str) -> Result<
                 "{scenario_prefix}round_{}_{}",
                 round.number, art.name
             ));
-        if let Some(src) = place_art(art, out, &rel)? {
-            shots.push(Shot { src, label });
-        }
+        let Some(src) = place_art(art, out, &rel)? else {
+            continue;
+        };
+        // Reads the header only, not the pixels.
+        let size = art
+            .local
+            .as_ref()
+            .and_then(|path| image::image_dimensions(path).ok());
+        // The first shot shows a derived copy and keeps the original one click
+        // away in the lightbox. Later shots are already behind a click.
+        let display = if shots.is_empty() {
+            derived_or_edge(art, run, model, round.number, out, store)
+                .unwrap_or_else(|| src.clone())
+        } else {
+            src.clone()
+        };
+        shots.push(Shot {
+            src: display,
+            full: src,
+            label,
+            size,
+        });
     }
     Ok(shots)
 }
@@ -382,7 +578,7 @@ fn build_trace_page(
     let page = view::TracePage {
         chrome: Chrome::new(
             &format!(
-                "Coaster Evals — {} · {} · round {}",
+                "CoasterBench — {} · {} · round {}",
                 run.name, model.model, round.number
             ),
             &format!("TRACE · ROUND {}", round.number),
@@ -416,8 +612,9 @@ fn build_model_view(
         .map(|name| (name.clone(), name))
         .collect();
     let mut rounds = Vec::with_capacity(model.rounds.len());
-    for round in &model.rounds {
-        let shots = round_shots(round, out, run, &model.model)?;
+    for (i, round) in model.rounds.iter().enumerate() {
+        let previous = i.checked_sub(1).map(|p| model.rounds[p].pieces.as_slice());
+        let shots = round_shots(round, out, run, &model.model, store)?;
         let stats = round_stats(round);
         rounds.push(RoundView {
             number: round.number,
@@ -426,13 +623,32 @@ fn build_model_view(
             trace_events: round.trace.len(),
             trace_rejections: round.trace.iter().filter(|e| e.is_rejection()).count(),
             badge: round_badge(round, stats.as_ref()),
+            circuit: circuit_badge(round.ride.as_ref().and_then(|r| r.circuit.as_ref())),
+            presentation: presentation_view(round.presentation.as_ref()),
             build_error: round.build_error.clone(),
             unrated_note: stats.is_none() && round.build_error.is_none(),
             stats,
             lookups: lookups_line(round),
             program_json: round.program_json.clone(),
             program_pieces: round.program_pieces,
+            dna: dna::profile_svg(
+                &round.pieces,
+                previous,
+                &format!(
+                    "Elevation profile of {}'s round {} track, {} pieces",
+                    model.model,
+                    round.number,
+                    round.pieces.len()
+                ),
+            ),
+            dna_caption: dna_caption(&round.pieces, previous),
+            replay: round_asset(round.replay.as_ref(), out, run, &model.model, round.number)?,
+            park: round_asset(round.park.as_ref(), out, run, &model.model, round.number)?,
+            replay_poster: poster(round, out, run, &model.model, store)?,
+            // A clip cut at the cap jumps rather than loops.
+            replay_loops: round.replay_looped.unwrap_or(true),
             shots_json: serde_json::to_string(&shots.iter().map(|s| &s.src).collect::<Vec<_>>())?,
+            fulls_json: serde_json::to_string(&shots.iter().map(|s| &s.full).collect::<Vec<_>>())?,
             labels_json: serde_json::to_string(
                 &shots.iter().map(|s| &s.label).collect::<Vec<_>>(),
             )?,
@@ -446,6 +662,29 @@ fn build_model_view(
         studied: figures(&studied, store, out)?,
         rounds,
     })
+}
+
+/// The line under a profile: what the track is, then what changed.
+fn dna_caption(pieces: &[dna::Piece], previous: Option<&[dna::Piece]>) -> String {
+    if pieces.is_empty() {
+        return String::new();
+    }
+    let summary = dna::summarise(pieces);
+    let mut parts = vec![format!("{} pieces", summary.pieces)];
+    if summary.lift_pieces > 0 {
+        parts.push(format!("{} on the lift", summary.lift_pieces));
+    }
+    if summary.inversions > 0 {
+        parts.push(format!(
+            "{} inversion{}",
+            summary.inversions,
+            if summary.inversions == 1 { "" } else { "s" }
+        ));
+    }
+    if let Some(diff) = dna::diff_line(pieces, previous) {
+        parts.push(diff);
+    }
+    parts.join(" · ")
 }
 
 /// The headline numbers at the top of a model detail page.
@@ -538,18 +777,16 @@ fn build_model_page(
         model_best_shot(model),
         store,
         out,
-        &format!("og-{}", path.replace(".html", ".png")),
+        &format!("og-{}", path.replace(".html", ".jpg")),
     )?;
-    let mut chrome = Chrome::new(
-        &format!("Coaster Evals — {} · {}", run.name, view.model),
+    let chrome = Chrome::new(
+        &format!("CoasterBench — {} · {}", run.name, view.model),
         &format!("{} · {}", view.model.to_uppercase(), run.name),
         &path,
         base_url,
     )
-    .width(view::Width::Wide);
-    if let Some(card) = &card {
-        chrome = chrome.og_card(card);
-    }
+    .width(view::Width::Wide)
+    .maybe_og_card(card.as_deref());
     let page = ModelPage {
         chrome,
         run_name: run.name.clone(),
@@ -558,7 +795,7 @@ fn build_model_page(
         of_models: run.models.len(),
         context: format!(
             "{} · {} · {}{} · {}",
-            run.mode,
+            run.mode_label(),
             run.ride_name(),
             run.harness,
             if run.scenarios.is_empty() {
@@ -566,7 +803,11 @@ fn build_model_page(
             } else {
                 format!(" · {} parks", run.scenarios.len())
             },
-            view::mode_tagline(&run.mode)
+            view::mode_tagline(if run.open_note {
+                "open note"
+            } else {
+                run.base_mode()
+            })
         ),
         stats: model_stats(run, model),
         model: view,
@@ -598,21 +839,23 @@ fn build_run_page(
         run_best_shot(run).and_then(model_best_shot),
         store,
         out,
-        &format!("og-run-{}.png", run.name),
+        &format!("og-run-{}.jpg", run.name),
     )?;
-    let mut chrome = Chrome::new(
-        &format!("Coaster Evals — {}", run.name),
-        &format!("RUN {} ({})", run.name, run.mode),
+    let chrome = Chrome::new(
+        &format!("CoasterBench — {}", run.name),
+        &format!("RUN {} ({})", run.name, run.mode_label()),
         &path,
         base_url,
     )
-    .width(view::Width::Wide);
-    if let Some(card) = &card {
-        chrome = chrome.og_card(card);
-    }
+    .width(view::Width::Wide)
+    .maybe_og_card(card.as_deref());
     let page = RunPage {
         chrome,
-        mode_tagline: view::mode_tagline(&run.mode),
+        mode_tagline: view::mode_tagline(if run.open_note {
+            "open note"
+        } else {
+            run.base_mode()
+        }),
         grace: format!("{}", run.grace),
         standings: standings(run),
         models,
@@ -624,20 +867,21 @@ fn write_page(path: &Path, html: &str) -> Result<()> {
     std::fs::write(path, html).with_context(|| format!("writing {}", path.display()))
 }
 
-fn thumbnail(
-    shot: &Art,
+/// Writes the thumbnail standing for a model's whole run (its best-rated
+/// coaster) into the site, and returns the src. None when it has no art.
+fn model_thumb(
+    model: &ModelRun,
     store: &ArtStore,
     out: &Path,
     run: &EvalRun,
-    model: &str,
 ) -> Result<Option<String>> {
-    let Some(src) = store.pixels(shot) else {
+    let Some(src) = model_best_shot(model).and_then(|shot| store.pixels(shot)) else {
         return Ok(None);
     };
     let rel = Path::new("assets").join("thumbs").join(format!(
-        "{}-{}.png",
+        "{}-{}.jpg",
         run.name,
-        model::sanitise_name(model)
+        model::sanitise_name(&model.model)
     ));
     images::write_thumbnail(&src, &out.join(&rel))?;
     Ok(Some(rel.to_string_lossy().replace('\\', "/")))
@@ -662,30 +906,25 @@ fn index_rows(runs: &[EvalRun], store: &ArtStore, out: &Path) -> Result<Vec<Inde
         for (i, model) in run.ranked().iter().enumerate() {
             let best = model.best();
             let ride = best.and_then(|r| r.ride.as_ref());
-            let shot = best
-                .and_then(|r| r.screenshot.as_ref())
-                .or_else(|| model.rounds.iter().find_map(|r| r.screenshot.as_ref()));
-            let thumb = match shot {
-                Some(shot) => thumbnail(shot, store, out, run, &model.model)?,
-                None => None,
-            };
             rows.push(IndexRow {
                 run_name: run.name.clone(),
                 run_href: format!("run-{}.html", run.name),
                 model_href: model_href(run, &model.model),
                 date: run.date(),
-                mode: run.mode.clone(),
+                mode: run.mode_label(),
                 coaster: run.ride_name(),
                 harness: run.harness.clone(),
                 parks: parks_label(run),
                 model: model.model.clone(),
-                thumb,
+                thumb: model_thumb(model, store, out, run)?,
                 place: place_label(i + 1),
                 is_winner: i == 0 && best.is_some(),
                 sort_score: run.score_of(model),
                 sort_intensity: ride.and_then(|r| r.intensity).unwrap_or(0.0),
                 sort_nausea: ride.and_then(|r| r.nausea).unwrap_or(0.0),
                 score: best.map(|_| format!("{:.2}", run.score_of(model))),
+                score_pct: String::new(), // filled in below, once the field's best is known
+
                 intensity: fmt_opt(ride.and_then(|r| r.intensity)),
                 nausea: fmt_opt(ride.and_then(|r| r.nausea)),
                 best_round: best_label(run, model),
@@ -695,6 +934,167 @@ fn index_rows(runs: &[EvalRun], store: &ArtStore, out: &Path) -> Result<Vec<Inde
     }
     rows.sort_by(|a, b| b.sort_score.total_cmp(&a.sort_score));
     Ok(rows)
+}
+
+/// The index's headline: the best-scoring steel twister with a replay. Twister
+/// only, because scores across ride types are not one league (a library-mode
+/// wooden coaster outrates every twister without answering the same question).
+fn featured(runs: &[EvalRun], store: &ArtStore, out: &Path) -> Result<Option<view::Featured>> {
+    const TWISTER: i64 = 51;
+    let best = runs
+        .iter()
+        .filter(|run| run.ride_type == TWISTER)
+        .flat_map(|run| run.models.iter().map(move |model| (run, model)))
+        .flat_map(|(run, model)| {
+            model
+                .rounds
+                .iter()
+                .filter(|round| round.replay.is_some() && round.excitement() > 0.0)
+                .map(move |round| (run, model, round))
+        })
+        .max_by(|a, b| a.2.excitement().total_cmp(&b.2.excitement()));
+    let Some((run, model, round)) = best else {
+        return Ok(None);
+    };
+
+    // The same paths the model page uses, so the hero shares its files.
+    let asset = |art: Option<&Art>| round_asset(art, out, run, &model.model, round.number);
+    let Some(replay) = asset(round.replay.as_ref())? else {
+        return Ok(None);
+    };
+    // The replay's own still: park screenshots frame the whole map.
+    let poster = poster(round, out, run, &model.model, store)?;
+
+    let ride = round.ride.as_ref();
+    let stat = |label: &str, value: String, class: &str| Stat {
+        label: label.to_string(),
+        value,
+        class: class.to_string(),
+    };
+    let stats = vec![
+        stat(
+            "excitement",
+            format!("{:.2}", round.excitement()),
+            "rating-excitement",
+        ),
+        stat(
+            "intensity",
+            fmt_opt(ride.and_then(|r| r.intensity)),
+            "rating-intensity",
+        ),
+        stat(
+            "nausea",
+            fmt_opt(ride.and_then(|r| r.nausea)),
+            "rating-nausea",
+        ),
+        stat(
+            "length",
+            ride.map_or_else(|| "—".to_string(), |r| format!("{} m", r.ride_length)),
+            "",
+        ),
+        stat(
+            "drops",
+            ride.map_or_else(|| "—".to_string(), |r| r.num_drops.to_string()),
+            "",
+        ),
+        stat(
+            "airtime",
+            ride.map_or_else(|| "—".to_string(), |r| r.total_air_time.to_string()),
+            "",
+        ),
+        stat("pieces", round.program_pieces.to_string(), ""),
+    ];
+
+    Ok(Some(view::Featured {
+        name: round.presentation.as_ref().map(|p| p.name.clone()),
+        model: model.model.clone(),
+        model_href: model_href(run, &model.model),
+        replay,
+        poster,
+        loops: round.replay_looped.unwrap_or(true),
+        alt: format!(
+            "A lap of {}the {} {} designed by {} in round {} of {}, rated {:.2} excitement by the game.",
+            round
+                .presentation
+                .as_ref()
+                .map(|p| format!("{} — ", p.name))
+                .unwrap_or_default(),
+            run.mode_label(),
+            run.ride_name(),
+            model.model,
+            round.number,
+            run.name,
+            round.excitement(),
+        ),
+        stats,
+    }))
+}
+
+/// The leaderboard, split by what the agent was allowed to do and then by
+/// coaster.
+///
+/// One table would rank a model that searched the stock design library, and one
+/// that read the ratings source, above every model that worked blind — and rank
+/// a 6 km wooden coaster against a twister while it was at it. Neither is a
+/// comparison anyone should draw, so the page does not offer it.
+fn index_boards(rows: Vec<IndexRow>) -> Vec<IndexBoard> {
+    // Blind design first: it is the benchmark. The rest are their own
+    // experiments, and say so.
+    let order = [
+        "design",
+        "library",
+        "design + open note",
+        "library + open note",
+    ];
+    let mut boards: Vec<IndexBoard> = Vec::new();
+    let mut conditions: Vec<String> = rows.iter().map(|r| r.mode.clone()).collect();
+    conditions.sort_by_key(|c| order.iter().position(|o| o == c).unwrap_or(usize::MAX));
+    conditions.dedup();
+
+    for condition in conditions {
+        let mine: Vec<&IndexRow> = rows.iter().filter(|r| r.mode == condition).collect();
+        let mut coasters: Vec<String> = mine.iter().map(|r| r.coaster.clone()).collect();
+        coasters.sort();
+        coasters.dedup();
+        let labelled = coasters.len() > 1;
+        let groups = coasters
+            .into_iter()
+            .map(|coaster| {
+                let mut rows: Vec<IndexRow> = mine
+                    .iter()
+                    .filter(|r| r.coaster == coaster)
+                    .map(|r| (*r).clone())
+                    .collect();
+                // The meter is magnitude within its own table: scaled across
+                // boards, a board's own leader would show a part-full bar
+                // against a score nobody here was competing with.
+                let top = rows.first().map_or(0.0, |r| r.sort_score);
+                for row in &mut rows {
+                    row.score_pct = if top > 0.0 {
+                        format!("{:.1}", (row.sort_score / top * 100.0).clamp(0.0, 100.0))
+                    } else {
+                        "0".to_string()
+                    };
+                }
+                IndexGroup {
+                    rows,
+                    coaster,
+                    labelled,
+                }
+            })
+            .collect();
+        boards.push(IndexBoard {
+            headline: condition == "design",
+            tagline: view::mode_tagline(if condition.contains("open note") {
+                "open note"
+            } else {
+                condition.split(" + ").next().unwrap_or(&condition)
+            }),
+            condition,
+            groups,
+        });
+    }
+    boards
 }
 
 /// Every finished model run, as head-to-head contenders. Draws from all runs,
@@ -711,13 +1111,6 @@ fn contenders(runs: &[EvalRun], store: &ArtStore, out: &Path) -> Result<Vec<view
             }
             let best = model.best();
             let ride = best.and_then(|r| r.ride.as_ref());
-            let shot = best
-                .and_then(|r| r.screenshot.as_ref())
-                .or_else(|| model.rounds.iter().find_map(|r| r.screenshot.as_ref()));
-            let thumb = match shot {
-                Some(shot) => thumbnail(shot, store, out, run, &model.model)?,
-                None => None,
-            };
             let totals = model.usage_totals();
             let href = model_href(run, &model.model);
             contenders.push(view::Contender {
@@ -727,9 +1120,10 @@ fn contenders(runs: &[EvalRun], store: &ArtStore, out: &Path) -> Result<Vec<view
                 date: run.date(),
                 model: model.model.clone(),
                 coaster: run.ride_name(),
-                mode: run.mode.clone(),
+                // Half the compare scenario key: open note must not fight black box.
+                mode: run.mode_label(),
                 harness: run.harness.clone(),
-                thumb,
+                thumb: model_thumb(model, store, out, run)?,
                 score: best.map(|_| run.score_of(model)),
                 intensity: ride.and_then(|r| r.intensity),
                 nausea: ride.and_then(|r| r.nausea),
@@ -830,22 +1224,26 @@ fn write_matchup_card(
     Ok(Some(filename.to_string()))
 }
 
-/// One matchup permalink: the interactive picker defaulted to this pair, with
-/// its own unfurl card and description so a shared link previews the right
-/// fight. All variants embed the same contender list (`json`, `count`).
-#[allow(clippy::too_many_arguments)]
+/// One compare page defaulted to a pair, with its own card so a shared link
+/// previews that fight. Every variant embeds the same contender list, so the
+/// picker works identically from any of them.
 fn write_compare_variant(
+    contenders: &[view::Contender],
     json: &str,
-    count: usize,
     a: &view::Contender,
     b: &view::Contender,
     page_path: &str,
-    card_name: Option<&str>,
     base_url: Option<&str>,
     out: &Path,
 ) -> Result<()> {
-    let mut chrome = Chrome::new(
-        &format!("Coaster Evals — {} vs {}", a.model, b.model),
+    let card = write_matchup_card(
+        a,
+        b,
+        out,
+        &format!("og-{page_path}").replace(".html", ".jpg"),
+    )?;
+    let chrome = Chrome::new(
+        &format!("CoasterBench — {} vs {}", a.model, b.model),
         "HEAD TO HEAD",
         page_path,
         base_url,
@@ -854,10 +1252,8 @@ fn write_compare_variant(
     .description(&format!(
         "{} vs {} — {} · {} mode. Head-to-head on CoasterBench.",
         a.model, b.model, a.coaster, a.mode
-    ));
-    if let Some(card) = card_name {
-        chrome = chrome.og_card(card);
-    }
+    ))
+    .maybe_og_card(card.as_deref());
     write_page(
         &out.join(page_path),
         &view::ComparePage {
@@ -865,7 +1261,7 @@ fn write_compare_variant(
             contenders_json: json.to_string(),
             default_a: a.id.clone(),
             default_b: b.id.clone(),
-            count,
+            count: contenders.len(),
         }
         .render()?,
     )
@@ -877,33 +1273,31 @@ fn build_compare_page(
     out: &Path,
 ) -> Result<()> {
     let json = serde_json::to_string(contenders)?;
-    let count = contenders.len();
     let by_id = |id: &str| contenders.iter().find(|c| c.id == id);
 
-    // The hub page: the default matchup, its card, and the picker.
+    // The hub page: the picker itself, defaulted to the best matchup available.
+    // Titled generically (it is the entry point, not one fight) but carded with
+    // its default pair.
     let (default_a, default_b) = default_pair(contenders);
     let hub_card = match (by_id(&default_a), by_id(&default_b)) {
-        (Some(a), Some(b)) => write_matchup_card(a, b, out, "og-compare.png")?,
+        (Some(a), Some(b)) => write_matchup_card(a, b, out, "og-compare.jpg")?,
         _ => None,
     };
-    let mut chrome = Chrome::new(
-        "Coaster Evals — Head to Head",
-        "HEAD TO HEAD",
-        "compare.html",
-        base_url,
-    )
-    .width(view::Width::Mid);
-    if let Some(card) = hub_card {
-        chrome = chrome.og_card(&card);
-    }
     write_page(
         &out.join("compare.html"),
         &view::ComparePage {
-            chrome,
+            chrome: Chrome::new(
+                "CoasterBench — Head to Head",
+                "HEAD TO HEAD",
+                "compare.html",
+                base_url,
+            )
+            .width(view::Width::Mid)
+            .maybe_og_card(hub_card.as_deref()),
             contenders_json: json.clone(),
             default_a,
             default_b,
-            count,
+            count: contenders.len(),
         }
         .render()?,
     )?;
@@ -919,19 +1313,8 @@ fn build_compare_page(
             if a.id == b.id || matchup_key(a) != matchup_key(b) {
                 continue;
             }
-            let slug = pair_slug(&a.id, &b.id);
-            let card_name = format!("og-compare-{slug}.png");
-            let card = write_matchup_card(a, b, out, &card_name)?;
-            write_compare_variant(
-                &json,
-                count,
-                a,
-                b,
-                &format!("compare-{slug}.html"),
-                card.as_deref(),
-                base_url,
-                out,
-            )?;
+            let path = format!("compare-{}.html", pair_slug(&a.id, &b.id));
+            write_compare_variant(contenders, &json, a, b, &path, base_url, out)?;
         }
     }
     Ok(())
@@ -947,7 +1330,6 @@ fn facets(runs: &[EvalRun]) -> Vec<Facet> {
         }
     };
     vec![
-        collect("mode", runs.iter().map(|r| r.mode.clone()).collect()),
         collect("coaster", runs.iter().map(|r| r.ride_name()).collect()),
         collect("harness", runs.iter().map(|r| r.harness.clone()).collect()),
         collect("parks", runs.iter().map(parks_label).collect()),
@@ -1035,7 +1417,7 @@ fn build_library_page(
     };
     let page = LibraryPage {
         chrome: Chrome::new(
-            "Coaster Evals — Track Design Library",
+            "CoasterBench — Track Design Library",
             "TRACK DESIGN LIBRARY",
             "library.html",
             base_url,
@@ -1053,7 +1435,7 @@ fn clean_output(out: &Path) -> Result<()> {
     if assets.is_dir() {
         std::fs::remove_dir_all(&assets)?;
     }
-    // Drop every .html and every generated og-*.png card. The per-matchup
+    // Drop every .html and every generated og-* card. The per-matchup
     // cards/pages are keyed on contender ids, so a removed run would otherwise
     // leave orphans; all live ones are rewritten this build.
     for entry in std::fs::read_dir(out)?.flatten() {
@@ -1062,7 +1444,7 @@ fn clean_output(out: &Path) -> Result<()> {
         let is_og_card = path
             .file_name()
             .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with("og-") && n.ends_with(".png"));
+            .is_some_and(|n| n.starts_with("og-") && (n.ends_with(".png") || n.ends_with(".jpg")));
         if is_html || is_og_card {
             std::fs::remove_file(path)?;
         }
@@ -1074,15 +1456,32 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let base_url = (!args.base_url.is_empty()).then_some(args.base_url.as_str());
 
-    let store = ArtStore::new(&args.artifact_base, &args.previews, &args.previews_manifest)?;
+    let store = ArtStore::new(&args.artifact_base, &args.previews, &args.previews_manifest)?
+        .remote_only(args.remote_artifacts)
+        .edge_resize(args.cf_images);
 
     let all_runs = model::load_runs(&args.runs, &store)?;
+    store.check_edge_resize(first_artifact_url(&all_runs).as_deref())?;
     let out = &args.out;
     clean_output(out)?;
 
     // The head-to-head draws from every finished model run, including complete
     // solo models inside runs the leaderboard hides, so build it before the
     // partial-run filter.
+    // Image work first and in parallel: decoding is the expensive part.
+    let jobs = derive_jobs(&all_runs, out);
+    images::derive_all(&jobs)?;
+
+    // A withdrawn run leaves the site entirely: no pages, no head-to-head, no
+    // row. The record stays in the repo, which is the point of saying so in
+    // run.json rather than deleting it.
+    let (all_runs, withdrawn): (Vec<EvalRun>, Vec<EvalRun>) = all_runs
+        .into_iter()
+        .partition(|run| run.published || args.include_unpublished);
+    for run in &withdrawn {
+        eprintln!("run {} withdrawn (published: false)", run.name);
+    }
+
     let contenders = contenders(&all_runs, &store, out)?;
 
     // A run that died (or is still going) half way through would show up as a
@@ -1103,18 +1502,21 @@ fn main() -> Result<()> {
         }
     }
 
+    let rows = index_rows(&runs, &store, out)?;
     let index = IndexPage {
-        chrome: Chrome::new("Coaster Evals", "COASTER EVALS", "index.html", base_url)
-            .width(view::Width::Mid)
-            .with_mermaid(),
+        chrome: Chrome::new("CoasterBench", "COASTERBENCH", "index.html", base_url)
+            .width(view::Width::Mid),
+        featured: featured(&runs, &store, out)?,
         facets: facets(&runs),
-        rows: index_rows(&runs, &store, out)?,
+        row_count: rows.len(),
+        boards: index_boards(rows),
         have_previews: store.have_previews(),
         mode_taglines: view::MODE_TAGLINES
             .iter()
             .map(|(mode, tagline)| (mode.to_string(), tagline.to_string()))
             .collect(),
         skipped,
+        withdrawn: withdrawn.iter().map(|run| run.name.clone()).collect(),
     };
     write_page(&out.join("index.html"), &index.render()?)?;
 
@@ -1125,10 +1527,11 @@ fn main() -> Result<()> {
         build_library_page(&args.runs, &store, out, base_url)?;
     }
 
+    fonts::write(out)?;
     images::write_favicon(out)?;
     if let Some(shot) = og_shot(&runs).and_then(|art| store.pixels(art)) {
-        images::write_og_card(&shot, &out.join("og-card.png"))?;
-        println!("wrote og-card.png to {}", out.display());
+        images::write_og_card(&shot, &out.join("og-card.jpg"))?;
+        println!("wrote og-card.jpg to {}", out.display());
     }
     if base_url.is_none() {
         eprintln!(
@@ -1142,4 +1545,105 @@ fn main() -> Result<()> {
         out.display()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn contender(id: &str, mode: &str, score: f64) -> view::Contender {
+        view::Contender {
+            id: id.to_string(),
+            href: format!("{id}.html"),
+            run: "r".to_string(),
+            date: "2026-07-25".to_string(),
+            model: id.to_string(),
+            coaster: "steel twister".to_string(),
+            mode: mode.to_string(),
+            harness: "claude-code".to_string(),
+            thumb: None,
+            score: Some(score),
+            intensity: None,
+            nausea: None,
+            similarity: None,
+            ride_length: None,
+            airtime: None,
+            drops: None,
+            best_round: None,
+            rounds: 6,
+            rated_rounds: 6,
+            tokens: 0.0,
+            cost: Some(0.0),
+            round_scores: vec![],
+        }
+    }
+
+    #[test]
+    fn open_note_never_headlines_a_fight_against_a_black_box_run() {
+        // Higher scores, but open note reads the ratings code: not a fair fight.
+        let cs = vec![
+            contender("on-a", "design + open note", 9.9),
+            contender("on-b", "design + open note", 9.8),
+            contender("bb-a", "design", 7.0),
+            contender("bb-b", "design", 6.9),
+            contender("bb-c", "design", 6.8),
+        ];
+        let (a, b) = default_pair(&cs);
+        let mode_of = |id: &String| {
+            cs.iter()
+                .find(|c| &c.id == id)
+                .map(|c| c.mode.clone())
+                .unwrap()
+        };
+        assert_eq!(
+            mode_of(&a),
+            mode_of(&b),
+            "default matchup must stay inside one scenario"
+        );
+        assert_eq!(mode_of(&a), "design", "biggest scenario wins the headline");
+    }
+
+    #[test]
+    fn circuit_badge_separates_clean_stranded_and_unclosed_track() {
+        let circuit = |walked, total, orphans, looped| Circuit {
+            walked_pieces: walked,
+            total_pieces: total,
+            orphan_pieces: orphans,
+            looped,
+        };
+
+        let clean = circuit_badge(Some(&circuit(48, 48, 0, true))).expect("a verdict");
+        assert_eq!(clean.class, "badge-ok");
+        assert!(clean.text.contains("48"), "{}", clean.text);
+
+        // The case the audit exists for: a rated ride whose screenshot also
+        // shows track no train touches.
+        let stranded = circuit_badge(Some(&circuit(40, 48, 8, true))).expect("a verdict");
+        assert_eq!(stranded.class, "badge-warn");
+        assert!(stranded.text.contains("8 of 48"), "{}", stranded.text);
+
+        let unclosed = circuit_badge(Some(&circuit(14, 14, 0, false))).expect("a verdict");
+        assert_eq!(unclosed.class, "badge-warn");
+        assert!(unclosed.text.contains("never closed"), "{}", unclosed.text);
+
+        assert!(
+            circuit_badge(None).is_none(),
+            "runs predating the audit claim nothing either way"
+        );
+    }
+
+    #[test]
+    fn presentation_becomes_safe_named_swatches() {
+        let presentation = model::Presentation {
+            name: "Retro Rocket".into(),
+            track_color: "bright_red".into(),
+            rail_color: "white".into(),
+            support_color: "dark_blue".into(),
+        };
+        let view = presentation_view(Some(&presentation)).expect("presentation view");
+        assert_eq!(view.name, "Retro Rocket");
+        assert_eq!(view.track.name, "bright red");
+        assert_eq!(view.track.class, "swatch-bright-red");
+        assert_eq!(view.support.class, "swatch-dark-blue");
+    }
 }

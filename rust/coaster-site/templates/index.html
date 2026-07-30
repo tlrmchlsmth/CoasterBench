@@ -1,16 +1,62 @@
 {% extends "base.html" %}
 {% block body %}
+{%- match featured %}
+{%- when Some(top) %}
+{# The best coaster on the board, running. Everything said about it is in the
+   caption. #}
+<figure class="hero">
+  {# preload="none": site.js starts it once on screen, and the clip streams
+     from its first chunk. #}
+  <video class="replay" controls{% if top.loops %} loop{% endif %} muted playsinline preload="none" aria-label="{{ top.alt }}"
+    {%- match top.poster %}{%- when Some(poster) %} poster="{{ poster }}"{%- when None %}{%- endmatch %}>
+    <source src="{{ top.replay }}" type="video/mp4">
+  </video>
+  <figcaption class="hero-meta">
+    {%- match top.name %}
+    {%- when Some(name) %}<strong class="hero-name">{{ name }}</strong>
+    {%- when None %}
+    {%- endmatch %}
+    <a href="{{ top.model_href }}">{{ top.model }}</a>
+    {%- for stat in top.stats %}
+    <span class="hero-stat"><span class="dim">{{ stat.label }}</span> <b class="{{ stat.class }}">{{ stat.value }}</b></span>
+    {%- endfor %}
+  </figcaption>
+</figure>
+{%- when None %}
+{%- endmatch %}
+
 <details class="explainer">
   <summary>Each round a model submits a track program. OpenRCT2 builds it, runs a test train, and
   returns ratings and a screenshot; the reported score is <b>excitement</b>.</summary>
   <div class="explainer-body">
-    <div class="mermaid">
-flowchart LR
-  M["model<br/>track program"] --> B["build + validate"]
-  B --> T["test train"]
-  T --> R["ratings + screenshot"]
-  R --> M
-  B -. rejected piece .-> M
+    {# Hand-drawn: this used to be a megabyte of CDN mermaid. #}
+    <svg class="flow" viewBox="0 0 620 96" role="img"
+      aria-label="Pipeline: a model submits a track program; the game builds and validates it, runs a test train, and returns ratings and a screenshot to the model. A rejected piece goes straight back to the model.">
+      <defs>
+        <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L8,4 L0,8 z" fill="var(--ink-soft)"/>
+        </marker>
+      </defs>
+      <g class="node-group">
+        <rect class="node node-accent" x="4" y="22" width="118" height="40"/>
+        <text x="63" y="39" text-anchor="middle">model</text>
+        <text x="63" y="53" text-anchor="middle">track program</text>
+        <rect class="node" x="164" y="22" width="126" height="40"/>
+        <text x="227" y="39" text-anchor="middle">build</text>
+        <text x="227" y="53" text-anchor="middle">+ validate</text>
+        <rect class="node" x="332" y="22" width="110" height="40"/>
+        <text x="387" y="46" text-anchor="middle">test train</text>
+        <rect class="node node-accent" x="484" y="22" width="132" height="40"/>
+        <text x="550" y="39" text-anchor="middle">ratings</text>
+        <text x="550" y="53" text-anchor="middle">+ screenshot</text>
+      </g>
+      <path class="edge" d="M122,42 L160,42"/>
+      <path class="edge" d="M290,42 L328,42"/>
+      <path class="edge" d="M442,42 L480,42"/>
+      <path class="edge" d="M550,62 L550,86 L63,86 L63,62"/>
+      <path class="edge edge-back" d="M200,22 L200,10 L100,10 L100,22"/>
+      <text class="edge-label" x="150" y="7" text-anchor="middle">rejected piece</text>
+    </svg>
     </div>
     <p>Pieces are placed through the same validated action path the game uses for player input, so
     an impossible curve or an open circuit fails as it would in-game. Intensity above 10 suppresses
@@ -19,16 +65,23 @@ flowchart LR
   </div>
 </details>
 
+{%- if row_count == 0 %}
 <div class="window">
-  <div class="titlebar"><span>{% if rows.is_empty() %}No runs yet{% else %}All runs{% endif %}</span>
+  <div class="titlebar"><span>No runs yet</span><span class="btn"></span></div>
+  <div class="body"><p>Run <code>uv run evals/driver.py</code> to generate one.</p></div>
+</div>
+{%- else %}
+
+<div class="window">
+  <div class="titlebar"><span>Filters</span>
     <span class="titlebar-links">
-    {%- if rows.len() >= 2 %}<a class="titlebar-link" href="compare.html">head to head &rarr;</a>{% endif %}
+    {%- if row_count >= 2 %}<a class="titlebar-link" href="compare.html">head to head &rarr;</a>{% endif %}
     {%- if have_previews %}<a class="titlebar-link" href="library.html">track design library &rarr;</a>{% endif %}
     </span></div>
   <div class="body">
-  {%- if rows.is_empty() %}
-    <p>Run <code>uv run evals/driver.py</code> to generate one.</p>
-  {%- else %}
+    {# On a phone these run to five rows, so site.js folds them away. #}
+    <details class="facet-box" open>
+    <summary>filters</summary>
     <div class="facets">
     {%- for facet in facets %}
       <span class="facet-group"><span class="facet-label">{{ facet.name }}</span>
@@ -39,6 +92,25 @@ flowchart LR
       </span>
     {%- endfor %}
     </div>
+    </details>
+    <p id="no-rows" class="dim footnote" hidden>No run matches those filters.</p>
+  </div>
+</div>
+
+{# One board per condition. Scores are not comparable across them: a model that
+   could search the stock library, or read the ratings source, is not playing the
+   same game as one working blind. Nor are ride types comparable, hence a table
+   per coaster inside a board. #}
+{%- for board in boards %}
+<div class="window board{% if board.headline %} board-headline{% endif %}" data-mode="{{ board.condition }}">
+  <div class="titlebar"><span>{{ board.condition }}{% if board.headline %} &mdash; the benchmark{% endif %}</span>
+    <span class="btn"></span></div>
+  <div class="body">
+    <p class="board-note dim">{{ board.tagline }}</p>
+  {%- for group in board.groups %}
+    <div class="board-group" data-coaster="{{ group.coaster }}">
+    {%- if group.labelled %}<h2 class="group-heading">{{ group.coaster }}</h2>{% endif %}
+    <div class="table-scroll">
     <table class="run-table">
       <thead><tr>
         <th></th>
@@ -50,7 +122,7 @@ flowchart LR
         <th>tokens / cost</th>
       </tr></thead>
       <tbody>
-      {%- for row in rows %}
+      {%- for row in group.rows %}
         <tr class="{% if row.is_winner %}winner{% endif %}"
             data-run="{{ row.run_name }}" data-mode="{{ row.mode }}" data-coaster="{{ row.coaster }}"
             data-harness="{{ row.harness }}" data-parks="{{ row.parks }}" data-model="{{ row.model }}"
@@ -59,17 +131,18 @@ flowchart LR
           <td>
           {%- match row.thumb %}
           {%- when Some(thumb) %}
-            <a href="{{ row.model_href }}"><img class="run-thumb" src="{{ thumb }}" alt="best coaster of {{ row.model }} in {{ row.run_name }}" loading="lazy"></a>
+            <a href="{{ row.model_href }}"><img class="run-thumb" src="{{ thumb }}" alt="best coaster of {{ row.model }} in {{ row.run_name }}" loading="lazy" decoding="async"></a>
           {%- when None %}
             <div class="no-preview">no image</div>
           {%- endmatch %}
           </td>
           <td class="run-cell"><a href="{{ row.run_href }}">{{ row.run_name }}</a><span class="dim">{{ row.date }}</span></td>
-          <td class="dim setup">{{ row.mode }} &middot; {{ row.coaster }} &middot; {{ row.harness }}{% if row.parks != "single" %} &middot; {{ row.parks }}{% endif %}</td>
+          <td class="dim setup">{{ row.coaster }} &middot; {{ row.harness }}{% if row.parks != "single" %} &middot; {{ row.parks }}{% endif %}</td>
           <td class="model"><span class="medal dim">{{ row.place }}</span> <a href="{{ row.model_href }}">{{ row.model }}</a></td>
           {%- match row.score %}
           {%- when Some(score) %}
-          <td class="score rating-excitement">{{ score }}<span class="dim best">{{ row.best_round }}</span></td>
+          <td class="score rating-excitement">{{ score }}<span class="dim best">{{ row.best_round }}</span>
+            <span class="score-meter" aria-hidden="true"><i style="width:{{ row.score_pct }}%"></i></span></td>
           <td><span class="rating-intensity">{{ row.intensity }}</span> <span class="dim">/</span>
               <span class="rating-nausea">{{ row.nausea }}</span></td>
           {%- when None %}
@@ -80,11 +153,20 @@ flowchart LR
       {%- endfor %}
       </tbody>
     </table>
-    {%- if !skipped.is_empty() %}
-    <p class="dim footnote">not shown, incomplete or still running:
-    {% for run in skipped %}{% if !loop.first %}, {% endif %}{{ run }}{% endfor %}</p>
-    {%- endif %}
-  {%- endif %}
+    </div>
+    </div>
+  {%- endfor %}
   </div>
 </div>
+{%- endfor %}
+
+{%- if !skipped.is_empty() %}
+<p class="dim footnote">not shown, incomplete or still running:
+{% for run in skipped %}{% if !loop.first %}, {% endif %}{{ run }}{% endfor %}</p>
+{%- endif %}
+{%- if !withdrawn.is_empty() %}
+<p class="dim footnote">withdrawn from the board (the records are still in the repo):
+{% for run in withdrawn %}{% if !loop.first %}, {% endif %}{{ run }}{% endfor %}</p>
+{%- endif %}
+{%- endif %}
 {% endblock %}

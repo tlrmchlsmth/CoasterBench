@@ -1,0 +1,9 @@
+{
+  "cache_read_tokens": 939776,
+  "cost_usd": 0.0,
+  "harness": "codex",
+  "input_tokens": 1000172,
+  "model": "gpt-5.6-sol",
+  "num_turns": 1,
+  "output_tokens": 8419
+}

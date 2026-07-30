@@ -43,6 +43,8 @@
  "claude-opus-4-8/round_5/park-r2.png",
  "claude-opus-4-8/round_5/park-r3.png",
  "claude-opus-4-8/round_5/park.png",
+ "claude-opus-4-8/round_5/replay.mp4",
+ "claude-opus-4-8/round_5/replay.png",
  "claude-sonnet-5/round_1/park-r1.png",
  "claude-sonnet-5/round_1/park-r2.png",
  "claude-sonnet-5/round_1/park-r3.png",
@@ -58,5 +60,7 @@
  "claude-sonnet-5/round_4/park-r1.png",
  "claude-sonnet-5/round_4/park-r2.png",
  "claude-sonnet-5/round_4/park-r3.png",
- "claude-sonnet-5/round_4/park.png"
+ "claude-sonnet-5/round_4/park.png",
+ "claude-sonnet-5/round_4/replay.mp4",
+ "claude-sonnet-5/round_4/replay.png"
 ]

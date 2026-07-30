@@ -51,6 +51,12 @@ struct RunMeta {
     /// runs.
     #[serde(default)]
     scenarios: Vec<String>,
+    /// Open note: the agents could read the engine source they are scored by.
+    #[serde(default)]
+    open_note: bool,
+    /// Set false to keep a run out of the published site. Absent means yes: a
+    /// run has to be deliberately withdrawn, never accidentally.
+    published: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +74,38 @@ pub struct Ride {
     pub total_air_time: i64,
     #[serde(default)]
     pub crashed: bool,
+    #[serde(default)]
+    pub circuit: Option<Circuit>,
+}
+
+/// Non-scoring name and colours the model chose for its banked winner.
+#[derive(Debug, Deserialize)]
+pub struct Presentation {
+    pub name: String,
+    pub track_color: String,
+    pub rail_color: String,
+    pub support_color: String,
+}
+
+/// The game's own walk of the ride's track. Absent from runs made before the
+/// audit existed, which is why the whole field is optional rather than zeroed.
+#[derive(Debug, Deserialize)]
+pub struct Circuit {
+    #[serde(default)]
+    pub walked_pieces: u32,
+    #[serde(default)]
+    pub total_pieces: u32,
+    #[serde(default)]
+    pub orphan_pieces: u32,
+    #[serde(default)]
+    pub looped: bool,
+}
+
+/// The sidecar filming leaves beside a clip.
+#[derive(Debug, Deserialize)]
+struct ReplayMeta {
+    #[serde(default)]
+    looped: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,6 +142,8 @@ struct Report {
     rides: Vec<Ride>,
     #[serde(default)]
     similarity: Option<Similarity>,
+    #[serde(default)]
+    presentation: Option<Presentation>,
 }
 
 /// One library tool call a model made before submitting a round.
@@ -146,11 +186,23 @@ pub struct Round {
     /// The rated ride of the round, when the test circuit completed.
     pub ride: Option<Ride>,
     pub similarity: Option<Similarity>,
+    pub presentation: Option<Presentation>,
     pub build_error: Option<String>,
     /// Pretty-printed program.json, shown in a <details> block.
     pub program_json: Option<String>,
     pub program_pieces: usize,
+    /// Parsed, for the elevation profile.
+    pub pieces: Vec<crate::dna::Piece>,
     pub screenshot: Option<Art>,
+    /// Exact scored park save, reopenable in OpenRCT2.
+    pub park: Option<Art>,
+    /// Replay of the finished ride, when one was recorded.
+    pub replay: Option<Art>,
+    /// Still from the replay's own camera; park screenshots frame the whole map.
+    pub replay_poster: Option<Art>,
+    /// A whole station-to-station cycle, and so loops. False when the lap
+    /// outran the cap; None for clips filmed before this was recorded.
+    pub replay_looped: Option<bool>,
     /// Additional view rotations of the same capture (park-r1/2/3.png).
     pub rotation_shots: Vec<Art>,
     /// See-through verification capture (park-x.png): terrain and supports
@@ -317,7 +369,9 @@ impl ModelRun {
 #[derive(Debug)]
 pub struct EvalRun {
     pub name: String,
-    pub mode: String,
+    /// Raw mode. Private: display and comparison keys must go through
+    /// `mode_label()`, which folds in modifiers like open note.
+    mode: String,
     pub grace: f64,
     pub models: Vec<ModelRun>,
     pub ride_type: i64,
@@ -325,6 +379,10 @@ pub struct EvalRun {
     /// Multi-scenario runs: the generated parks every model competed on, in
     /// run.json order. Empty for classic single-park runs.
     pub scenarios: Vec<String>,
+    pub open_note: bool,
+    /// Whether this run belongs on the published site; `published: false` in
+    /// run.json withdraws it without deleting the evidence.
+    pub published: bool,
     /// Models and round count run.json promised, when it recorded them.
     expected_models: Vec<String>,
     expected_rounds: Option<u32>,
@@ -384,6 +442,22 @@ impl EvalRun {
             None
         } else {
             Some(format!("short rounds: {}", short.join(", ")))
+        }
+    }
+
+    /// Mode alone, for tagline lookup. Not for display: see `mode_label()`.
+    pub fn base_mode(&self) -> &str {
+        &self.mode
+    }
+
+    /// Mode as shown and faceted. Open note is a modifier rather than a mode,
+    /// but its scores are not comparable with black-box ones, so the label has
+    /// to say so wherever a run is identified.
+    pub fn mode_label(&self) -> String {
+        if self.open_note {
+            format!("{} + open note", self.mode)
+        } else {
+            self.mode.clone()
         }
     }
 
@@ -507,6 +581,10 @@ fn load_round(
         .as_ref()
         .map(serde_json::to_string_pretty)
         .transpose()?;
+    let pieces = program
+        .as_ref()
+        .map(crate::dna::parse_pieces)
+        .unwrap_or_default();
 
     // Paths in the artifact manifest are relative to the run directory.
     let rel = round_dir.strip_prefix(run_dir).unwrap_or(round_dir);
@@ -521,10 +599,17 @@ fn load_round(
         scenario: scenario.map(str::to_string),
         ride: report.rides.into_iter().find(|r| r.excitement.is_some()),
         similarity: report.similarity,
+        presentation: report.presentation,
         build_error: build_error(report.program.as_ref()),
         program_json,
         program_pieces,
+        pieces,
         screenshot,
+        park: art("park.park"),
+        replay: art("replay.mp4"),
+        replay_poster: art("replay.png"),
+        replay_looped: read_json_opt::<ReplayMeta>(&round_dir.join("replay.json"))?
+            .map(|meta| meta.looped),
         rotation_shots,
         xray_shot: art("park-x.png"),
         lookups: read_json_opt(&round_dir.join("lookups.json"))?.unwrap_or_default(),
@@ -619,6 +704,8 @@ pub fn load_runs(runs_dir: &Path, store: &ArtStore) -> Result<Vec<EvalRun>> {
             ride_type: meta.ride_type.unwrap_or(52),
             harness: meta.harness.unwrap_or_else(|| "driver-api".to_string()),
             scenarios,
+            open_note: meta.open_note,
+            published: meta.published.unwrap_or(true),
             expected_models: meta.models,
             expected_rounds: meta.rounds,
         });
@@ -694,12 +781,19 @@ mod tests {
                 num_drops: 0,
                 total_air_time: 0,
                 crashed: false,
+                circuit: None,
             }),
             similarity: None,
+            presentation: None,
             build_error: None,
             program_json: None,
             program_pieces: 0,
+            pieces: Vec::new(),
             screenshot: None,
+            park: None,
+            replay: None,
+            replay_poster: None,
+            replay_looped: None,
             rotation_shots: Vec::new(),
             xray_shot: None,
             lookups: Vec::new(),
@@ -724,9 +818,19 @@ mod tests {
             ride_type: 52,
             harness: "test".to_string(),
             scenarios: Vec::new(),
+            open_note: false,
+            published: true,
             expected_models: expected.iter().map(|m| m.to_string()).collect(),
             expected_rounds: rounds,
         }
+    }
+
+    #[test]
+    fn open_note_runs_are_labelled_apart_from_black_box_ones() {
+        let mut r = run(vec![("m", 3)], &["m"], Some(3));
+        assert_eq!(r.mode_label(), "design");
+        r.open_note = true;
+        assert_eq!(r.mode_label(), "design + open note");
     }
 
     #[test]

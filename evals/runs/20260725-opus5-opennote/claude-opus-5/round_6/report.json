@@ -1,0 +1,203 @@
+{
+  "bounds": {
+    "max_tile_x": 66,
+    "max_tile_y": 66,
+    "max_z": 360,
+    "min_tile_x": 26,
+    "min_tile_y": 48,
+    "min_z": 112
+  },
+  "placed_pieces": [
+    "begin_station",
+    "middle_station",
+    "middle_station",
+    "end_station",
+    {
+      "chain": true,
+      "t": "flat_to_up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25_to_flat"
+    },
+    "flat_to_down_25",
+    "down_25_to_down_60",
+    "down_60",
+    "down_60",
+    "down_60_to_down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "left_vertical_loop",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25",
+    "up_25",
+    "up_25_to_flat",
+    "left_corkscrew_up",
+    "left_corkscrew_down",
+    "flat_to_down_25",
+    "down_25",
+    "down_25_to_flat",
+    "flat_to_up_60",
+    "up_60_to_flat",
+    "flat_to_down_60",
+    "down_60_to_flat",
+    "flat_to_up_25",
+    "right_vertical_loop",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25_to_up_60",
+    "up_60_to_flat",
+    "flat_to_down_60",
+    "down_60_to_down_25",
+    "down_25_to_flat",
+    "right_corkscrew_up",
+    "right_corkscrew_down",
+    "flat_to_up_25",
+    "up_25_to_up_60",
+    "up_60_to_flat",
+    "flat_to_down_60",
+    "down_60_to_down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "left_vertical_loop",
+    "down_25_to_flat",
+    "left_corkscrew_up",
+    "left_corkscrew_down",
+    "flat_to_down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25_to_up_60",
+    "up_60_to_flat",
+    "flat_to_down_60",
+    "down_60_to_down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25_to_flat",
+    "left_turn_5",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat_to_up_25",
+    "up_25_to_flat",
+    "flat_to_up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25",
+    "down_25_to_flat",
+    "flat_to_right_bank",
+    "banked_right_turn_3",
+    "right_bank_to_flat",
+    "s_bend_right",
+    "right_turn_5",
+    "right_turn_5",
+    "flat",
+    "flat",
+    "flat"
+  ],
+  "program": null,
+  "rides": [
+    {
+      "average_speed": 610521,
+      "crashed": false,
+      "excitement": 7.389999866485596,
+      "highest_drop": 26,
+      "id": 0,
+      "intensity": 9.18000030517578,
+      "max_lateral_g": 2.5199999809265137,
+      "max_negative_g": -2.430000066757202,
+      "max_positive_g": 4.179999828338623,
+      "max_speed": 1360875,
+      "nausea": 4.880000114440918,
+      "num_drops": 15,
+      "num_inversions": 6,
+      "ride_length": 744,
+      "ride_type": 51,
+      "status": "testing",
+      "tested": true,
+      "total_air_time": 116
+    }
+  ],
+  "similarity": {
+    "common_substring_share": 0.14018691588785046,
+    "edit_similarity": 0.3769230769230769,
+    "mirrored": true,
+    "nearest_design": "Driftwood",
+    "nearest_ride_type": 52,
+    "similarity": 0.3769230769230769
+  },
+  "start": {
+    "bank": 0,
+    "dir": 0,
+    "slope": 0,
+    "x": 60,
+    "y": 60,
+    "z": 112
+  }
+}

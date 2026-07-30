@@ -1,0 +1,94 @@
+{
+  "agent_state": "fresh-sandbox",
+  "allowed_tools": "mcp__coaster__*",
+  "artifact_integrity": "sha256",
+  "budgets": {
+    "max_agent_turns": 120,
+    "replay_cap_seconds": 90,
+    "replay_fps": 20,
+    "rounds": 6,
+    "session_timeout_seconds": 1800,
+    "simulation_ticks": 25000
+  },
+  "capabilities": [],
+  "codex_reasoning_effort": "medium",
+  "codex_sandbox": "codex-arena-67457d",
+  "codex_sandbox_mode": "read-only",
+  "condition": "design",
+  "environment": {
+    "arch": "aarch64",
+    "os": "macos",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "sandbox_images": {
+      "claude_code": {
+        "image_id": "8245dda726a3453c67f3fbda885076e8877835b8bd637162b944d485178e53c3",
+        "reference": "localhost/coaster-sandbox"
+      },
+      "codex": {
+        "image_id": "03324722a426e322c86bc1f2059fa04ec3c42099cf35a9987e675f7a4afa41d8",
+        "reference": "localhost/codex-arena"
+      },
+      "opencode": {
+        "image_id": "59fc3a8ff5059b9a26b192eeb4c4f2477957067d2a9b469d31eaf1abf5fd5392",
+        "reference": "localhost/coaster-or"
+      }
+    }
+  },
+  "harness": "codex",
+  "harness_version": "0.2.0",
+  "harnesses": {
+    "gpt-5.6-sol": "codex"
+  },
+  "modalities": {
+    "gpt-5.6-sol": "text,image"
+  },
+  "mode": "design",
+  "model_specs": {
+    "gpt-5.6-sol": {
+      "agent_version": "codex-cli 0.145.0-alpha.18",
+      "harness": "codex",
+      "id": "gpt-5.6-sol",
+      "modalities": "text,image",
+      "provider": "codex-oauth",
+      "reasoning_effort": "medium"
+    }
+  },
+  "models": [
+    "gpt-5.6-sol"
+  ],
+  "open_note": false,
+  "open_note_source": null,
+  "opencode_permission": {
+    "bash": "deny",
+    "edit": "deny",
+    "external_directory": "deny",
+    "glob": "deny",
+    "grep": "deny",
+    "read": "deny",
+    "webfetch": "deny",
+    "websearch": "deny"
+  },
+  "opencode_sandbox": "coaster-or",
+  "orchestrator": "coaster-bench",
+  "ride_type": 51,
+  "round_reset": "baseline-park-snapshot",
+  "rounds": 6,
+  "sandbox": "coaster-sub",
+  "scenario": {
+    "path": "~/rct2-assets/Scenarios/Build your own Six Flags Park.SC6",
+    "sha256": "3974d7ffaa5a1dc8be192d4538fdb88c46e0a354a4b45d3ee79172ee15209c8d"
+  },
+  "schema_version": 2,
+  "scorer": {
+    "name": "adjusted_excitement",
+    "similarity_grace": 0.5,
+    "version": "0.2.0"
+  },
+  "similarity_grace": 0.5,
+  "source": {
+    "commit": "c3dccab42fd25edf9a9b01a1e70113a5d3e18341",
+    "dirty": true,
+    "dirty_diff_sha256": "ef4960fd3fe6bafbbbb393ba6e35b11a0d6dfb9e78d4cae3e242548eff3d89a8"
+  },
+  "ticks": 25000
+}

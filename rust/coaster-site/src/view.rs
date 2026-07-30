@@ -8,16 +8,18 @@ use serde::Serialize;
 
 pub const TAGLINE: &str = "A benchmark in which language models design roller coasters that RollerCoaster Tycoon 2 builds, tests, and rates.";
 
-pub const FONTS: &str = "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@700;800&family=IBM+Plex+Mono:wght@400;600&display=swap";
-
 pub const CSS: &str = include_str!("../static/site.css");
 pub const JS: &str = include_str!("../static/site.js");
 
-pub const MODE_TAGLINES: [(&str, &str); 2] = [
+pub const MODE_TAGLINES: [(&str, &str); 3] = [
     ("design", "design mode — models build from scratch"),
     (
         "library",
         "library mode — models may search the stock track design library, which measures retrieval and adaptation; copies score zero",
+    ),
+    (
+        "open note",
+        "open-note condition — the agent is given the engine source it is scored by, so it can read the ratings code instead of guessing; scores are not comparable with black-box runs",
     ),
 ];
 
@@ -51,10 +53,8 @@ pub struct Chrome {
     /// Page width: prose by default, `Mid` for the leaderboard, `Wide` for
     /// the multi-column run and round grids.
     pub width: Width,
-    /// Pull in mermaid (from jsDelivr) only on the page that draws a diagram.
-    pub needs_mermaid: bool,
     /// The unfurl image filename for this page, relative to the site root.
-    /// Defaults to the shared `og-card.png`; run/model/compare pages set their
+    /// Defaults to the shared `og-card.jpg`; run/model/compare pages set their
     /// own so the preview shows the coaster the page is actually about.
     pub og_card: String,
     /// Per-page unfurl description; falls back to the site tagline. Matchup
@@ -77,8 +77,7 @@ impl Chrome {
             path: path.to_string(),
             base_url: base_url.map(|b| b.trim_end_matches('/').to_string()),
             width: Width::Prose,
-            needs_mermaid: false,
-            og_card: "og-card.png".to_string(),
+            og_card: "og-card.jpg".to_string(),
             description: None,
         }
     }
@@ -88,9 +87,12 @@ impl Chrome {
         self
     }
 
-    /// Point this page's unfurl at its own card (see `og_card`).
-    pub fn og_card(mut self, card: &str) -> Self {
-        self.og_card = card.to_string();
+    /// Point this page's unfurl at its own card, when one could be drawn;
+    /// `None` leaves it on the shared site card (see `og_card`).
+    pub fn maybe_og_card(mut self, card: Option<&str>) -> Self {
+        if let Some(card) = card {
+            self.og_card = card.to_string();
+        }
         self
     }
 
@@ -105,11 +107,6 @@ impl Chrome {
         self.description.as_deref().unwrap_or(TAGLINE)
     }
 
-    pub fn with_mermaid(mut self) -> Self {
-        self.needs_mermaid = true;
-        self
-    }
-
     pub fn tagline(&self) -> &'static str {
         TAGLINE
     }
@@ -122,8 +119,9 @@ impl Chrome {
         JS
     }
 
-    pub fn fonts(&self) -> &'static str {
-        FONTS
+    /// The one face the first screen needs; the rest load normally.
+    pub fn font_preload(&self) -> &'static str {
+        crate::fonts::PRELOAD
     }
 
     pub fn wrap_class(&self) -> &'static str {
@@ -135,9 +133,10 @@ impl Chrome {
     }
 
     pub fn og_url(&self) -> Option<String> {
-        self.base_url
-            .as_ref()
-            .map(|base| format!("{base}/{}", self.path))
+        // The home page is the bare directory, not /index.html: this is the
+        // canonical URL as well as the unfurl one.
+        let path = self.path.strip_suffix("index.html").unwrap_or(&self.path);
+        self.base_url.as_ref().map(|base| format!("{base}/{path}"))
     }
 
     pub fn og_image(&self) -> Option<String> {
@@ -156,6 +155,7 @@ pub struct Figure {
 
 /// One row of the index table: a single model's collection of rounds within a
 /// run (runs are pivoted, so a three-model run is three rows).
+#[derive(Clone)]
 pub struct IndexRow {
     pub run_name: String,
     pub run_href: String,
@@ -176,10 +176,30 @@ pub struct IndexRow {
     pub sort_intensity: f64,
     pub sort_nausea: f64,
     pub score: Option<String>,
+    /// This row's score as a percentage of the best on the board, for the meter
+    /// under the number. 0 when nothing rated.
+    pub score_pct: String,
     pub intensity: String,
     pub nausea: String,
     pub best_round: String,
     pub usage: String,
+}
+
+/// One board: a condition, and its rows split by coaster so nothing is ever
+/// ranked across ride types.
+pub struct IndexBoard {
+    pub condition: String,
+    pub tagline: String,
+    /// True for the black-box design board, the benchmark proper.
+    pub headline: bool,
+    pub groups: Vec<IndexGroup>,
+}
+
+pub struct IndexGroup {
+    pub coaster: String,
+    /// Shown only when a board holds more than one coaster.
+    pub labelled: bool,
+    pub rows: Vec<IndexRow>,
 }
 
 pub struct Facet {
@@ -187,16 +207,39 @@ pub struct Facet {
     pub values: Vec<String>,
 }
 
+/// The record coaster, headlining the index: footage rather than a still,
+/// unlabelled beyond its caption.
+pub struct Featured {
+    /// Model-authored ride name, when the run recorded one.
+    pub name: Option<String>,
+    pub model: String,
+    pub model_href: String,
+    pub replay: String,
+    /// The replay's own first frame, so the still looks like the clip.
+    pub poster: Option<String>,
+    /// Whether the clip runs a whole cycle, and so can be looped.
+    pub loops: bool,
+    /// For anyone who cannot watch it.
+    pub alt: String,
+    pub stats: Vec<Stat>,
+}
+
 #[derive(Template)]
 #[template(path = "index.html")]
 pub struct IndexPage {
     pub chrome: Chrome,
+    /// None when no leaderboard round has a video yet.
+    pub featured: Option<Featured>,
     pub facets: Vec<Facet>,
-    pub rows: Vec<IndexRow>,
+    /// One per condition, hardest-earned first.
+    pub boards: Vec<IndexBoard>,
+    pub row_count: usize,
     pub have_previews: bool,
     pub mode_taglines: Vec<(String, String)>,
     /// Runs left out because they never finished, newest first.
     pub skipped: Vec<String>,
+    /// Runs deliberately withdrawn from the site, named rather than vanished.
+    pub withdrawn: Vec<String>,
 }
 
 pub struct StandingRow {
@@ -212,8 +255,14 @@ pub struct StandingRow {
 }
 
 pub struct Shot {
+    /// What the card shows: downscaled and re-encoded.
     pub src: String,
+    /// The original capture, loaded only when someone opens the lightbox.
+    pub full: String,
     pub label: String,
+    /// Intrinsic size, when the file was local enough to measure. Emitted as
+    /// width/height so the browser reserves the space before the image lands.
+    pub size: Option<(u32, u32)>,
 }
 
 /// How a round ended, as a chip next to its heading: only the outcomes worth
@@ -221,6 +270,18 @@ pub struct Shot {
 pub struct Badge {
     pub text: String,
     pub class: String,
+}
+
+pub struct Swatch {
+    pub name: String,
+    pub class: String,
+}
+
+pub struct Presentation {
+    pub name: String,
+    pub track: Swatch,
+    pub rail: Swatch,
+    pub support: Swatch,
 }
 
 pub struct RoundView {
@@ -233,6 +294,12 @@ pub struct RoundView {
     pub trace_events: usize,
     pub trace_rejections: usize,
     pub badge: Option<Badge>,
+    /// Verdict of the circuit audit: whether every piece standing in the park
+    /// is track a train actually rides. Absent on rounds recorded before the
+    /// audit existed, which is different from a round that has no orphans.
+    pub circuit: Option<Badge>,
+    /// Model-authored name and colours; absent on runs made before the tool.
+    pub presentation: Option<Presentation>,
     /// The build failure, kept to one clamped line (full text in the tooltip).
     pub build_error: Option<String>,
     /// Rating line, absent when the round produced no rated ride.
@@ -241,9 +308,23 @@ pub struct RoundView {
     pub lookups: Option<String>,
     pub program_json: Option<String>,
     pub program_pieces: usize,
+    /// Elevation profile as inline SVG; empty without a program to walk.
+    pub dna: String,
+    /// The profile's shape, and what changed since the round before.
+    pub dna_caption: String,
+    /// Replay video source, when the round recorded one.
+    pub replay: Option<String>,
+    /// Download URL for the exact scored .park save.
+    pub park: Option<String>,
+    /// Poster still framed like the replay, written beside it while filming.
+    pub replay_poster: Option<String>,
+    /// Whether the clip runs a whole cycle, and so can be looped.
+    pub replay_loops: bool,
     pub shots: Vec<Shot>,
     /// The rotator's shot list / labels as JSON, for the client-side flipper.
     pub shots_json: String,
+    /// The same shots at full resolution, for the lightbox.
+    pub fulls_json: String,
     pub labels_json: String,
 }
 

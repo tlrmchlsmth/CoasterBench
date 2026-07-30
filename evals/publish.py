@@ -1,19 +1,21 @@
 # /// script
 # requires-python = ">=3.11"
 # ///
-"""Upload run artifacts (screenshots, videos) to the Cloudflare R2 bucket.
+"""Upload run artifacts (screenshots, videos, parks) to the Cloudflare R2 bucket.
 
 Heavy artifacts live in R2 (served at https://artifacts.wseaton.com), not in
 git; only the JSON metadata is tracked. This script uploads every artifact
 under evals/runs/ (and the library preview PNGs) via `wrangler r2 object put`
 (needs a `wrangler login` session, no static keys anywhere) and records what
-was uploaded in manifests that site.py reads:
+was uploaded in manifests that the site generator reads:
 
   evals/runs/<run>/artifacts.json   run-relative artifact paths
   evals/library-previews.json       preview file names
 
-Uploads are incremental: files already listed in a manifest are skipped
-unless --force is given. Run it after every eval run, before pushing.
+Uploads are incremental: a file goes up when it is new, or when its contents
+changed. The manifest records paths (what the site reads); the digests that
+decide "changed" live beside it in `.artifacts-digests.json`. Both are committed.
+Skipping on path alone left regenerated artifacts serving stale bytes from R2.
 
 Usage:
   uv run evals/publish.py                     # publish all runs + previews
@@ -27,6 +29,7 @@ import argparse
 import json
 import subprocess
 import sys
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -40,6 +43,7 @@ CONTENT_TYPES = {
     ".png": "image/png",
     ".mp4": "video/mp4",
     ".webm": "video/webm",
+    ".park": "application/octet-stream",
 }
 
 
@@ -88,9 +92,38 @@ def write_manifest(path: Path, entries: set[str]) -> None:
     path.write_text(json.dumps(sorted(entries), indent=1) + "\n")
 
 
+def digest_path(manifest_path: Path) -> Path:
+    """Same directory, dotted name."""
+    return manifest_path.with_name(f".{manifest_path.stem}-digests.json")
+
+
+def load_digests(manifest_path: Path) -> dict[str, str]:
+    path = digest_path(manifest_path)
+    return json.loads(path.read_text()) if path.is_file() else {}
+
+
+def write_digests(manifest_path: Path, digests: dict[str, str]) -> None:
+    path = digest_path(manifest_path)
+    path.write_text(json.dumps(dict(sorted(digests.items())), indent=1) + "\n")
+
+
+def digest(path: Path) -> str:
+    """Full SHA-256 used as the durable artifact-integrity manifest."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def needs_upload(rel: str, path: Path, manifest: set[str], digests: dict[str, str]) -> bool:
+    """New, or changed. No recorded digest means upload: the bucket's contents
+    are unknown, so the first run after this landed re-uploaded everything."""
+    if rel not in manifest:
+        return True
+    return digests.get(rel) != digest(path)
+
+
 def publish_run(run_dir: Path, force: bool, workers: int) -> None:
     manifest_path = run_dir / "artifacts.json"
     manifest = load_manifest(manifest_path)
+    digests = load_digests(manifest_path)
     jobs: list[tuple[str, Path]] = []
     entries = set(manifest)
     for path in sorted(run_dir.rglob("*")):
@@ -98,8 +131,9 @@ def publish_run(run_dir: Path, force: bool, workers: int) -> None:
             continue
         rel = path.relative_to(run_dir).as_posix()
         entries.add(rel)
-        if rel in manifest and not force:
+        if not force and not needs_upload(rel, path, manifest, digests):
             continue
+        digests[rel] = digest(path)
         jobs.append((f"runs/{run_dir.name}/{rel}", path))
     if not jobs:
         print(f"{run_dir.name}: up to date ({len(entries)} artifacts)")
@@ -107,18 +141,21 @@ def publish_run(run_dir: Path, force: bool, workers: int) -> None:
     print(f"{run_dir.name}: uploading {len(jobs)} artifact(s)")
     upload_all(jobs, workers)
     write_manifest(manifest_path, entries)
+    write_digests(manifest_path, digests)
 
 
 def publish_previews(force: bool, workers: int) -> None:
     if not PREVIEWS_DIR.is_dir():
         return
     manifest = load_manifest(PREVIEWS_MANIFEST)
+    digests = load_digests(PREVIEWS_MANIFEST)
     entries = set(manifest)
     jobs: list[tuple[str, Path]] = []
     for path in sorted(PREVIEWS_DIR.glob("*.png")):
         entries.add(path.name)
-        if path.name in manifest and not force:
+        if not force and not needs_upload(path.name, path, manifest, digests):
             continue
+        digests[path.name] = digest(path)
         jobs.append((f"library-previews/{path.name}", path))
     if not jobs:
         print(f"library-previews: up to date ({len(entries)} previews)")
@@ -126,6 +163,7 @@ def publish_previews(force: bool, workers: int) -> None:
     print(f"library-previews: uploading {len(jobs)} preview(s)")
     upload_all(jobs, workers)
     write_manifest(PREVIEWS_MANIFEST, entries)
+    write_digests(PREVIEWS_MANIFEST, digests)
 
 
 def main() -> int:

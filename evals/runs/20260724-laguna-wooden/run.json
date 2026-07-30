@@ -6,7 +6,9 @@
   "modalities": {
     "openrouter_poolside_laguna-s-2.1": "text"
   },
-  "mode": "design",
+  "capabilities": ["track_library"],
+  "condition": "library",
+  "mode": "library",
   "models": [
     "openrouter_poolside_laguna-s-2.1"
   ],

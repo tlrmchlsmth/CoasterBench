@@ -21,9 +21,12 @@
     #include "../actions/ride/RideCreateAction.h"
     #include "../actions/ride/RideDemolishAction.h"
     #include "../actions/ride/RideEntranceExitPlaceAction.h"
+    #include "../actions/ride/RideSetAppearanceAction.h"
+    #include "../actions/ride/RideSetNameAction.h"
     #include "../actions/ride/RideSetStatusAction.h"
     #include "../actions/track/TrackPlaceAction.h"
     #include "../actions/track/TrackRemoveAction.h"
+    #include "../drawing/Colour.h"
     #include "../drawing/Drawing.h"
     #include "../OpenRCT2.h"
     #include "../core/Console.hpp"
@@ -35,12 +38,16 @@
     #include "../interface/Screenshot.h"
     #include "../interface/Viewport.h"
     #include "../object/ObjectLimits.h"
+    #include "../object/ObjectManager.h"
+    #include "../park/ParkFile.h"
     #include "../ride/Ride.h"
     #include "../ride/RideData.h"
     #include "../ride/RideEntry.h"
     #include "../ride/RideManager.hpp"
     #include "../ride/RideRatings.h"
     #include "../ride/TrackData.h"
+    #include "../ride/Vehicle.h"
+    #include "../ride/TrackIteration.h"
     #include "../ride/TrackStyle.h"
     #include "../ride/TrackDesign.h"
     #include "../ride/TrackDesignRepository.h"
@@ -49,10 +56,13 @@
     #include "orct2_agent.h"
 
     #include <algorithm>
+    #include <array>
     #include <cctype>
     #include <cstdlib>
     #include <cstring>
     #include <unistd.h>
+    #include <unordered_set>
+    #include <vector>
 
 using namespace OpenRCT2;
 
@@ -66,41 +76,37 @@ namespace
         }
     }
 
+    // Whether the action succeeded; if not, its message (falling back to the
+    // title, which is all some failures carry) goes to the caller's buffer.
+    bool CheckResult(const GameActions::Result& result, char* err, size_t errLen)
+    {
+        if (result.error == GameActions::Status::ok)
+        {
+            return true;
+        }
+        auto message = result.getErrorMessage();
+        if (message.empty())
+        {
+            message = result.getErrorTitle();
+        }
+        CopyError(err, errLen, message);
+        return false;
+    }
+
     // Runs an action with noSpend (evals are judged on reported cost, not park
     // cash) and copies any error message into the caller's buffer.
     bool ExecuteForBridge(GameActions::GameAction& action, char* err, size_t errLen, GameActions::Result& outResult)
     {
         action.SetFlags(action.GetFlags() | GameActions::CommandFlag::noSpend);
         outResult = GameActions::Execute(&action, getGameState());
-        if (outResult.error != GameActions::Status::ok)
-        {
-            auto message = outResult.getErrorMessage();
-            if (message.empty())
-            {
-                message = outResult.getErrorTitle();
-            }
-            CopyError(err, errLen, message);
-            return false;
-        }
-        return true;
+        return CheckResult(outResult, err, errLen);
     }
 
     // Query-only variant of ExecuteForBridge: validates without mutating.
     bool QueryForBridge(GameActions::GameAction& action, char* err, size_t errLen)
     {
         action.SetFlags(action.GetFlags() | GameActions::CommandFlag::noSpend);
-        auto result = GameActions::Query(&action, getGameState());
-        if (result.error != GameActions::Status::ok)
-        {
-            auto message = result.getErrorMessage();
-            if (message.empty())
-            {
-                message = result.getErrorTitle();
-            }
-            CopyError(err, errLen, message);
-            return false;
-        }
-        return true;
+        return CheckResult(GameActions::Query(&action, getGameState()), err, errLen);
     }
 
     // Scans the whole map for track elements and returns their tile bbox and
@@ -263,6 +269,38 @@ namespace
         return false;
     }
 
+    // Where the game wants a piece placed for a cursor sitting at its entry:
+    // the origin z compensates for pieces whose geometry starts above their
+    // base (mirrors TrackDesignPlaceRide, TrackDesign.cpp).
+    CoordsXYZD PieceOrigin(TrackElemType trackType, const Orct2TrackCursor& cursor)
+    {
+        const auto& coords = TrackMetadata::GetTrackElementDescriptor(trackType).coordinates;
+        return { cursor.x, cursor.y, cursor.z - coords.zBegin, static_cast<Direction>(cursor.direction & 3) };
+    }
+
+    // Advances a cursor across one piece: position, facing, and the roll/pitch
+    // the piece exits at (TrackDesign.cpp:1707). Run from a zeroed cursor it
+    // yields the piece's pure displacement for that facing.
+    void AdvanceCursor(TrackElemType trackType, Orct2TrackCursor& cursor)
+    {
+        const auto& ted = TrackMetadata::GetTrackElementDescriptor(trackType);
+        const auto& coords = ted.coordinates;
+        uint8_t rotation = cursor.direction & 3;
+        auto offset = CoordsXY{ coords.x, coords.y }.Rotate(rotation);
+        CoordsXYZ next{ cursor.x + offset.x, cursor.y + offset.y, cursor.z - coords.zBegin + coords.zEnd };
+        rotation = (rotation + coords.rotationEnd - coords.rotationBegin) & 3;
+        if ((coords.rotationEnd & (1 << 2)) == 0)
+        {
+            next += CoordsDirectionDelta[rotation];
+        }
+        cursor.x = next.x;
+        cursor.y = next.y;
+        cursor.z = next.z;
+        cursor.direction = rotation;
+        cursor.bank = static_cast<uint8_t>(ted.definition.rollEnd);
+        cursor.slope = static_cast<uint8_t>(ted.definition.pitchEnd);
+    }
+
     // First loaded ride object whose entry supports the requested ride type.
     ObjectEntryIndex FindSubtypeForRideType(ride_type_t rideType)
     {
@@ -394,9 +432,14 @@ bool orct2_host_ride_create(uint16_t ride_type, uint16_t* out_ride_id, char* err
     return true;
 }
 
+// speed is the brake/booster speed the game stores on the element. It is only
+// read for brakes, block brakes and boosters; everything else ignores it. The
+// bridge used to hardcode 0 here, which made every booster inert (a booster
+// only accelerates while its speed exceeds the train's, and 0 never does) and
+// every brake a full stop.
 bool orct2_host_track_place(
-    uint16_t ride_id, uint16_t track_type, bool chain_lift, Orct2TrackCursor* cursor, int64_t* out_cost, char* err,
-    size_t err_len)
+    uint16_t ride_id, uint16_t track_type, bool chain_lift, uint8_t speed, Orct2TrackCursor* cursor, int64_t* out_cost,
+    char* err, size_t err_len)
 {
     if (cursor == nullptr || out_cost == nullptr)
     {
@@ -411,9 +454,6 @@ bool orct2_host_track_place(
     }
 
     auto trackType = static_cast<TrackElemType>(track_type);
-    const auto& ted = TrackMetadata::GetTrackElementDescriptor(trackType);
-    const auto& coords = ted.coordinates;
-
     if (!CheckPieceDrawable(*ride, trackType, err, err_len)
         || !CheckEntryContinuity(trackType, *cursor, err, err_len))
     {
@@ -426,34 +466,16 @@ bool orct2_host_track_place(
         liftFlags.set(LiftHillAndInverted::liftHill);
     }
 
-    // The piece origin z compensates for pieces whose geometry starts above
-    // their base (mirrors TrackDesignPlaceRide, TrackDesign.cpp).
-    CoordsXYZD origin{ cursor->x, cursor->y, cursor->z - coords.zBegin, static_cast<Direction>(cursor->direction & 3) };
     auto action = GameActions::TrackPlaceAction(
-        rideId, trackType, ride->type, origin, 0 /*brakeSpeed*/, 0 /*colour*/, 4 /*seatRotation*/, liftFlags,
-        false /*fromTrackDesign*/);
+        rideId, trackType, ride->type, PieceOrigin(trackType, *cursor), speed, 0 /*colour*/, 4 /*seatRotation*/,
+        liftFlags, false /*fromTrackDesign*/);
     GameActions::Result result;
     if (!ExecuteForBridge(action, err, err_len, result))
     {
         return false;
     }
     *out_cost = result.cost;
-
-    // Advance the cursor along the piece geometry (TrackDesign.cpp:1707).
-    uint8_t rotation = cursor->direction & 3;
-    auto offset = CoordsXY{ coords.x, coords.y }.Rotate(rotation);
-    CoordsXYZ next{ cursor->x + offset.x, cursor->y + offset.y, cursor->z - coords.zBegin + coords.zEnd };
-    rotation = (rotation + coords.rotationEnd - coords.rotationBegin) & 3;
-    if ((coords.rotationEnd & (1 << 2)) == 0)
-    {
-        next += CoordsDirectionDelta[rotation];
-    }
-    cursor->x = next.x;
-    cursor->y = next.y;
-    cursor->z = next.z;
-    cursor->direction = rotation;
-    cursor->bank = static_cast<uint8_t>(ted.definition.rollEnd);
-    cursor->slope = static_cast<uint8_t>(ted.definition.pitchEnd);
+    AdvanceCursor(trackType, *cursor);
     return true;
 }
 
@@ -467,6 +489,69 @@ bool orct2_host_ride_set_status(uint16_t ride_id, uint8_t status, char* err, siz
     auto action = GameActions::RideSetStatusAction(RideId::FromUnderlying(ride_id), static_cast<RideStatus>(status));
     GameActions::Result result;
     return ExecuteForBridge(action, err, err_len, result);
+}
+
+bool orct2_host_ride_style(
+    uint16_t ride_id, const char* name, const char* track_color, const char* rail_color, const char* support_color,
+    char* err, size_t err_len)
+{
+    if (name == nullptr || track_color == nullptr || rail_color == nullptr || support_color == nullptr)
+    {
+        CopyError(err, err_len, "name and all three colours are required");
+        return false;
+    }
+
+    const auto parseColour = [err, err_len](const char* value, const char* field, Drawing::Colour& out) {
+        out = Drawing::colourFromString(value, Drawing::kColourNull);
+        if (out == Drawing::kColourNull || EnumValue(out) >= Drawing::kColourNumNormal)
+        {
+            CopyError(err, err_len, std::string("invalid ") + field + ": " + value);
+            return false;
+        }
+        return true;
+    };
+    Drawing::Colour track;
+    Drawing::Colour rails;
+    Drawing::Colour supports;
+    if (!parseColour(track_color, "track colour", track) || !parseColour(rail_color, "rail colour", rails)
+        || !parseColour(support_color, "support colour", supports))
+    {
+        return false;
+    }
+
+    const auto rideId = RideId::FromUnderlying(ride_id);
+    auto nameAction = GameActions::RideSetNameAction(rideId, name);
+    auto trackAction = GameActions::RideSetAppearanceAction(
+        rideId, GameActions::RideSetAppearanceType::trackColourMain, EnumValue(track), 0);
+    auto railAction = GameActions::RideSetAppearanceAction(
+        rideId, GameActions::RideSetAppearanceType::trackColourAdditional, EnumValue(rails), 0);
+    auto supportAction = GameActions::RideSetAppearanceAction(
+        rideId, GameActions::RideSetAppearanceType::trackColourSupports, EnumValue(supports), 0);
+
+    // Query every action before executing any of them: a duplicate name or
+    // invalid ride must not leave a partially styled candidate.
+    const std::array<GameActions::GameAction*, 4> actions = {
+        &nameAction,
+        &trackAction,
+        &railAction,
+        &supportAction,
+    };
+    for (auto* action : actions)
+    {
+        if (!QueryForBridge(*action, err, err_len))
+        {
+            return false;
+        }
+    }
+    GameActions::Result result;
+    for (auto* action : actions)
+    {
+        if (!ExecuteForBridge(*action, err, err_len, result))
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool orct2_host_ride_detail(uint16_t ride_id, Orct2RideDetail* out)
@@ -489,6 +574,7 @@ bool orct2_host_ride_detail(uint16_t ride_id, Orct2RideDetail* out)
         .max_speed = ride->maxSpeed,
         .average_speed = ride->averageSpeed,
         .ride_length = ride->getTotalLength(),
+        .ride_time = ride->getTotalTime(),
         .max_positive_g = ride->maxPositiveVerticalG,
         .max_negative_g = ride->maxNegativeVerticalG,
         .max_lateral_g = ride->maxLateralG,
@@ -517,10 +603,7 @@ bool orct2_host_track_remove(uint16_t ride_id, uint16_t track_type, const Orct2T
         return false;
     }
     auto trackType = static_cast<TrackElemType>(track_type);
-    const auto& coords = TrackMetadata::GetTrackElementDescriptor(trackType).coordinates;
-    // Same origin-z compensation as placement.
-    CoordsXYZD at{ origin->x, origin->y, origin->z - coords.zBegin, static_cast<Direction>(origin->direction & 3) };
-    auto action = GameActions::TrackRemoveAction(trackType, 0 /*sequence*/, at);
+    auto action = GameActions::TrackRemoveAction(trackType, 0 /*sequence*/, PieceOrigin(trackType, *origin));
     GameActions::Result result;
     if (!ExecuteForBridge(action, err, err_len, result))
     {
@@ -536,24 +619,9 @@ bool orct2_host_piece_delta(uint16_t track_type, uint8_t dir_in, Orct2TrackCurso
     {
         return false;
     }
-    const auto& ted = TrackMetadata::GetTrackElementDescriptor(static_cast<TrackElemType>(track_type));
-    const auto& coords = ted.coordinates;
-    // Mirror of the cursor-advance math in orct2_host_track_place, from a
-    // zero origin, so callers see the pure displacement for this facing.
-    uint8_t rotation = dir_in & 3;
-    auto offset = CoordsXY{ coords.x, coords.y }.Rotate(rotation);
-    CoordsXYZ next{ offset.x, offset.y, coords.zEnd - coords.zBegin };
-    rotation = (rotation + coords.rotationEnd - coords.rotationBegin) & 3;
-    if ((coords.rotationEnd & (1 << 2)) == 0)
-    {
-        next += CoordsDirectionDelta[rotation];
-    }
-    out->x = next.x;
-    out->y = next.y;
-    out->z = next.z;
-    out->direction = rotation;
-    out->bank = static_cast<uint8_t>(ted.definition.rollEnd);
-    out->slope = static_cast<uint8_t>(ted.definition.pitchEnd);
+    // The advance from a zeroed cursor is the piece's pure displacement.
+    *out = Orct2TrackCursor{ .x = 0, .y = 0, .z = 0, .direction = static_cast<uint8_t>(dir_in & 3), .bank = 0, .slope = 0 };
+    AdvanceCursor(static_cast<TrackElemType>(track_type), *out);
     return true;
 }
 
@@ -579,15 +647,13 @@ bool orct2_host_track_query(uint16_t ride_id, uint16_t track_type, const Orct2Tr
         return false;
     }
     auto trackType = static_cast<TrackElemType>(track_type);
-    const auto& coords = TrackMetadata::GetTrackElementDescriptor(trackType).coordinates;
     if (!CheckPieceDrawable(*ride, trackType, err, err_len)
         || !CheckEntryContinuity(trackType, *cursor, err, err_len))
     {
         return false;
     }
-    CoordsXYZD origin{ cursor->x, cursor->y, cursor->z - coords.zBegin, static_cast<Direction>(cursor->direction & 3) };
     auto action = GameActions::TrackPlaceAction(
-        rideId, trackType, ride->type, origin, 0, 0, 4, SelectedLiftAndInverted{}, false);
+        rideId, trackType, ride->type, PieceOrigin(trackType, *cursor), 0, 0, 4, SelectedLiftAndInverted{}, false);
     return QueryForBridge(action, err, err_len);
 }
 
@@ -615,6 +681,133 @@ bool orct2_host_track_bounds(Orct2TrackBounds* out)
         return false;
     }
     return FindTrackBounds(*out);
+}
+
+// Walks a ride's circuit with the game's own iterator, the one findTrackGap
+// uses, seeded from the same station element the game starts from when it
+// checks a ride for a complete circuit. What it counts is therefore what a
+// train rides, not what was placed.
+//
+// This exists because ratings are a weak witness for "the screenshot shows a
+// real coaster": they require a closed circuit and a completed test lap, so
+// they prove the ridden loop is sound and say nothing about track sitting off
+// to one side. That leftover track still draws.
+bool orct2_host_circuit_stats(uint16_t ride_id, Orct2CircuitStats* out)
+{
+    if (out == nullptr)
+    {
+        return false;
+    }
+    *out = {};
+
+    const auto rideId = RideId::FromUnderlying(ride_id);
+    const auto* ride = GetRide(rideId);
+    if (ride == nullptr)
+    {
+        return false;
+    }
+
+    // Only sequence 0 counts. A piece spanning several tiles (a large turn)
+    // has an element on each of them, while the walk visits it once, so
+    // counting every element would invent orphans that are not there.
+    uint32_t total = 0;
+    const auto mapSize = getGameState().mapSize;
+    for (int32_t ty = 0; ty < mapSize.y; ty++)
+    {
+        for (int32_t tx = 0; tx < mapSize.x; tx++)
+        {
+            auto* element = MapGetFirstElementAt(TileCoordsXY{ tx, ty });
+            if (element == nullptr)
+            {
+                continue;
+            }
+            do
+            {
+                const auto* track = element->asTrack();
+                if (track == nullptr || track->GetRideIndex() != rideId || track->GetSequenceIndex() != 0)
+                {
+                    continue;
+                }
+                total++;
+            } while (!(element++)->isLastForTile());
+        }
+    }
+    out->total_pieces = total;
+
+    const auto stationIndex = StationIndex::FromUnderlying(0);
+    auto* origin = ride->getOriginElement(stationIndex);
+    if (origin == nullptr)
+    {
+        return false;
+    }
+    const auto startLoc = ride->getStation(stationIndex).Start;
+    CoordsXYE trackElement{ startLoc.x, startLoc.y, reinterpret_cast<TileElement*>(origin) };
+
+    // Distinct elements rather than a step count: the iterator revisits its
+    // starting piece to detect the loop, and the start element itself is only
+    // reached again if the circuit closes.
+    std::unordered_set<const TileElement*> seen;
+    seen.insert(trackElement.element);
+
+    // Same shape as findTrackGap: a half-speed iterator catches a track that
+    // cycles without ever coming back to the start (#2081), and the hard cap
+    // stops anything the tortoise misses from hanging the eval.
+    constexpr uint32_t kMaxWalk = 10000;
+    bool moveSlowIt = true;
+    TrackCircuitIterator it = {};
+    trackCircuitIteratorBegin(&it, trackElement);
+    TrackCircuitIterator slowIt = it;
+    uint32_t steps = 0;
+    while (trackCircuitIteratorNext(&it))
+    {
+        if (it.current.element != nullptr)
+        {
+            seen.insert(it.current.element);
+        }
+        if (++steps >= kMaxWalk)
+        {
+            break;
+        }
+        moveSlowIt = !moveSlowIt;
+        if (moveSlowIt)
+        {
+            trackCircuitIteratorNext(&slowIt);
+            if (trackCircuitIteratorsMatch(&it, &slowIt))
+            {
+                break;
+            }
+        }
+    }
+
+    // The walk starts at the station's departure element and only goes
+    // forward, so on a circuit that does not close, the track behind the
+    // station never gets visited: a plain station plus a straight measures 6
+    // of 8, with the two station tiles behind the start looking stranded.
+    // Sweeping backwards as well makes an orphan mean what it says, track
+    // joined to nothing, rather than track merely upstream of the start.
+    // A closed circuit is already fully covered, hence the guard.
+    if (!it.looped)
+    {
+        TrackCircuitIterator back = {};
+        trackCircuitIteratorBegin(&back, trackElement);
+        uint32_t backSteps = 0;
+        while (trackCircuitIteratorPrevious(&back) && backSteps++ < kMaxWalk)
+        {
+            if (back.current.element == nullptr)
+            {
+                break;
+            }
+            if (!seen.insert(back.current.element).second)
+            {
+                break;
+            }
+        }
+    }
+
+    out->looped = it.looped;
+    out->walked_pieces = static_cast<uint32_t>(seen.size());
+    out->orphan_pieces = total > out->walked_pieces ? total - out->walked_pieces : 0;
+    return true;
 }
 
 // Scans the same directories as the game's track design index and imports
@@ -652,6 +845,112 @@ char* orct2_host_track_library_json(void)
         LOG_ERROR("track library scan failed: %s", e.what());
         return nullptr;
     }
+}
+
+// Renders one frame of the same view orct2_host_capture uses, but hands back
+// RGBA bytes. Filming a ride writes a frame every other tick, where the PNG
+// encode and two file writes per frame cost more than the render.
+//
+// The caller sizes the buffer from orct2_host_capture_size and reuses it, so a
+// whole replay allocates once. Returns the bytes written, or 0 on failure or a
+// buffer too small.
+size_t orct2_host_capture_frame(int32_t zoom, uint8_t rotation, bool fit_track, uint8_t* out, size_t cap)
+{
+    if (out == nullptr)
+    {
+        return 0;
+    }
+    try
+    {
+        CaptureOptions options;
+        options.Zoom = ZoomLevel{ static_cast<int8_t>(zoom) };
+        options.Rotation = rotation & 3;
+        if (fit_track)
+        {
+            Orct2TrackBounds bounds;
+            if (FindTrackBounds(bounds))
+            {
+                options.View = FitViewToTrack(bounds, options.Rotation);
+            }
+        }
+        std::vector<uint8_t> pixels;
+        int32_t width = 0;
+        int32_t height = 0;
+        if (!CaptureImageToBuffer(options, pixels, width, height) || pixels.size() > cap)
+        {
+            return 0;
+        }
+        std::memcpy(out, pixels.data(), pixels.size());
+        return pixels.size();
+    }
+    catch (const std::exception& e)
+    {
+        LOG_ERROR("frame capture failed: %s", e.what());
+        return 0;
+    }
+}
+
+// Frame dimensions for the current track, without rendering anything.
+bool orct2_host_capture_size(int32_t zoom, uint8_t rotation, bool fit_track, uint32_t* out_w, uint32_t* out_h)
+{
+    if (out_w == nullptr || out_h == nullptr)
+    {
+        return false;
+    }
+    auto rotationMasked = static_cast<uint8_t>(rotation & 3);
+    Orct2TrackBounds bounds;
+    if (fit_track && FindTrackBounds(bounds))
+    {
+        auto view = FitViewToTrack(bounds, rotationMasked);
+        auto zoomLevel = ZoomLevel{ static_cast<int8_t>(zoom) };
+        // Matches CreateRT: the view is in world pixels, the target in screen
+        // pixels after the zoom division.
+        *out_w = static_cast<uint32_t>(zoomLevel.ApplyInversedTo(view.Width));
+        *out_h = static_cast<uint32_t>(zoomLevel.ApplyInversedTo(view.Height));
+        return *out_w > 0 && *out_h > 0;
+    }
+    return false;
+}
+
+// The lead train's status (Vehicle::Status), so a replay can start where a
+// viewer expects it to: the train leaving the station, not wherever it happened
+// to be when the test ended.
+bool orct2_host_vehicle_status(uint16_t ride_id, uint8_t* out_status)
+{
+    if (out_status == nullptr)
+    {
+        return false;
+    }
+    const auto* ride = GetRide(RideId::FromUnderlying(ride_id));
+    if (ride == nullptr || ride->numTrains == 0)
+    {
+        return false;
+    }
+    const auto* vehicle = getGameState().entities.GetEntity<Vehicle>(ride->vehicles[0]);
+    if (vehicle == nullptr)
+    {
+        return false;
+    }
+    *out_status = static_cast<uint8_t>(vehicle->status);
+    return true;
+}
+
+bool orct2_host_save_park(const char* path)
+{
+    if (path == nullptr)
+    {
+        return false;
+    }
+    return RustBridge::SavePark(path);
+}
+
+bool orct2_host_load_park(const char* path)
+{
+    if (path == nullptr)
+    {
+        return false;
+    }
+    return GetContext()->LoadParkFromFile(path);
 }
 
 void orct2_host_string_free(char* s)
@@ -771,9 +1070,33 @@ namespace OpenRCT2::RustBridge
         return orct2_agent_capture(path, zoom, rotation, fitTrack, xray);
     }
 
-    int32_t Serve(const char* bind, uint16_t port)
+    int32_t CaptureReplay(const char* path, uint32_t maxSeconds, int32_t zoom)
     {
-        return orct2_agent_serve(bind, port);
+        return orct2_agent_capture_replay(path, maxSeconds, zoom);
+    }
+
+    bool SavePark(std::string_view path)
+    {
+        try
+        {
+            auto exporter = std::make_unique<ParkFileExporter>();
+            // Pack the loaded objects, as the crash handler's save does:
+            // without them a park using anything non-standard reopens with
+            // missing objects on a machine that lacks them.
+            exporter->ExportObjectsList = GetContext()->GetObjectManager().GetPackableObjects();
+            exporter->Export(getGameState(), path, kParkFileSaveCompressionLevel);
+            return true;
+        }
+        catch (const std::exception& e)
+        {
+            LOG_ERROR("park save failed: %s", e.what());
+            return false;
+        }
+    }
+
+    int32_t Serve(const char* bind, uint16_t port, uint16_t controlPort)
+    {
+        return orct2_agent_serve(bind, port, controlPort);
     }
 
     int32_t DumpLibrary(const char* path)
@@ -783,7 +1106,7 @@ namespace OpenRCT2::RustBridge
 
     int32_t RenderTrackLibrary(const char* outDir)
     {
-        // Same rule as evals/site.py sanitise_name(): [^A-Za-z0-9._-] -> '_'.
+        // Same rule as coaster-site's sanitise_name(): [^A-Za-z0-9._-] -> '_'.
         auto sanitise = [](const std::string& name) {
             std::string out = name;
             for (auto& c : out)

@@ -1,0 +1,35 @@
+id: openrouter
+resource_version: 1
+display_name: OpenRouter
+description: OpenRouter OpenAI-compatible inference API (opencode harness)
+category: inference
+credentials:
+- name: api_key
+  description: OpenRouter API key
+  env_vars:
+  - OPENROUTER_API_KEY
+  required: true
+  auth_style: bearer
+  header_name: Authorization
+  query_param: ''
+endpoints:
+- host: openrouter.ai
+  port: 443
+  protocol: rest
+  access: read-write
+  enforcement: enforce
+- host: models.dev
+  port: 443
+  protocol: rest
+  access: read-only
+  enforcement: enforce
+binaries:
+- /home/sandbox/bin/codex
+- /usr/local/bin/node
+- /usr/local/lib/node_modules/opencode-ai/bin/opencode.exe
+inference_capable: true
+discovery:
+  credentials:
+  - api_key
+source: user
+scope: workspace

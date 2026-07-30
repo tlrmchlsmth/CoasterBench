@@ -13,7 +13,9 @@ mod host;
 mod library;
 mod mcp;
 mod pieces;
+mod presentation;
 mod program;
+mod replay;
 mod report;
 mod similarity;
 
@@ -124,6 +126,71 @@ pub unsafe extern "C" fn orct2_agent_capture(
     }
 }
 
+/// Films the park's coaster into `path` as an mp4 (ffmpeg on PATH does the
+/// encoding), starting from the train leaving the station and ending at its next
+/// departure, which is one whole cycle and so loops. `max_seconds` bounds a ride
+/// that never comes back round (a valleyed circuit, or a lap longer than the
+/// cap); those clips are excerpts and say so in the sidecar. Ticks the simulation on, so
+/// call it after the report and any screenshot. Returns 0 on success.
+///
+/// This is how a round recorded before replays existed gets one: rerun its
+/// track program through `coasterbench-cli eval --replay`.
+///
+/// # Safety
+/// `path` must be null or a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn orct2_agent_capture_replay(
+    path: *const c_char,
+    max_seconds: u32,
+    zoom: i32,
+) -> i32 {
+    let Some(path) = read_c_path(path) else {
+        host::log("orct2-agent: no replay path given");
+        return 1;
+    };
+    let Some(ride_id) = subject_ride() else {
+        host::log("orct2-agent: no ride to film");
+        return 1;
+    };
+    match replay::film_ride(&path, ride_id, max_seconds, zoom) {
+        Ok(filmed) => {
+            host::log(&format!(
+                "orct2-agent: replay written to {path} ({} frames, {}x{} at {}fps, {})",
+                filmed.frames,
+                filmed.width,
+                filmed.height,
+                filmed.fps,
+                if filmed.looped {
+                    "one full cycle, loops"
+                } else {
+                    "cut at the cap, does not loop"
+                }
+            ));
+            0
+        }
+        Err(e) => {
+            host::log(&format!("orct2-agent: replay failed: {e}"));
+            1
+        }
+    }
+}
+
+/// The ride a batch eval is about: the best-rated coaster in the park, ignoring
+/// stalls (which never get ratings). Falls back to the first coaster, so an
+/// untested track can still be filmed, which is when the footage explains most.
+fn subject_ride() -> Option<u16> {
+    let rides: Vec<host::RideStats> = (0..host::ride_count())
+        .filter_map(host::ride_stats)
+        .filter(|s| !s.is_stall)
+        .collect();
+    rides
+        .iter()
+        .filter(|s| s.has_ratings)
+        .max_by_key(|s| s.excitement)
+        .or_else(|| rides.first())
+        .map(|s| s.id)
+}
+
 /// Runs the MCP server on bind:port (bind defaults to 127.0.0.1 when null),
 /// blocking the game thread. Tool calls execute game actions directly;
 /// `finish_and_test` advances the simulation inline. Returns nonzero if the
@@ -132,9 +199,13 @@ pub unsafe extern "C" fn orct2_agent_capture(
 /// # Safety
 /// `bind` must be null or a valid NUL-terminated string.
 #[no_mangle]
-pub unsafe extern "C" fn orct2_agent_serve(bind: *const c_char, port: u16) -> i32 {
+pub unsafe extern "C" fn orct2_agent_serve(
+    bind: *const c_char,
+    port: u16,
+    control_port: u16,
+) -> i32 {
     let bind = read_c_path(bind).unwrap_or_else(|| "127.0.0.1".to_string());
-    match mcp::serve(&bind, port) {
+    match mcp::serve(&bind, port, control_port) {
         Ok(()) => 0,
         Err(e) => {
             host::log(&format!("orct2-agent: serve failed: {e}"));
@@ -191,7 +262,7 @@ pub unsafe extern "C" fn orct2_agent_dump_library(out_path: *const c_char) -> i3
     0
 }
 
-/// Called by `openrct2-cli eval` after the tick loop: logs a per-ride summary
+/// Called by `coasterbench-cli eval` after the tick loop: logs a per-ride summary
 /// through the host so results land in the game's console output.
 #[no_mangle]
 pub extern "C" fn orct2_agent_eval_summary() {

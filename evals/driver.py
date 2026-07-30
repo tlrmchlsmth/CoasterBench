@@ -5,7 +5,7 @@
 """Coaster design head-to-head: two Claude models iteratively design a coaster.
 
 Each round the model submits a JSON track program (via forced tool use); the
-harness runs `openrct2-cli eval` on a fresh copy of the scenario, then feeds
+harness runs `coasterbench-cli eval` on a fresh copy of the scenario, then feeds
 back the eval report and a park screenshot. Best excitement across rounds wins.
 
 Two modes:
@@ -58,7 +58,7 @@ import anthropic
 REPO = Path(__file__).resolve().parent.parent
 # COASTERBENCH_CLI lets a CI environment point at a binary that didn't come
 # from this checkout's build dir (e.g. extracted from the game image).
-CLI = Path(os.environ.get("COASTERBENCH_CLI", REPO / "build" / "openrct2-cli"))
+CLI = Path(os.environ.get("COASTERBENCH_CLI", REPO / "build" / "coasterbench-cli"))
 DEFAULT_SCENARIO = Path.home() / "rct2-assets" / "Scenarios" / "Build your own Six Flags Park.SC6"
 RCT2_DATA = Path.home() / "rct2-assets"
 # Assetless default: a checked-in upstream test park (large, mostly-open flat
@@ -457,6 +457,23 @@ def render_schematic(trace: list[dict], out_path: Path) -> Path | None:
     return out_path
 
 
+def downscale(src: Path, dst: Path, longest_edge: int) -> bool:
+    """Fit an image inside longest_edge px. macOS has sips, everyone else has
+    ImageMagick; without either the round just runs without a screenshot."""
+    for cmd in (
+        ["sips", "-Z", str(longest_edge), str(src), "--out", str(dst)],
+        ["magick", str(src), "-resize", f"{longest_edge}x{longest_edge}>", str(dst)],
+        ["convert", str(src), "-resize", f"{longest_edge}x{longest_edge}>", str(dst)],
+    ):
+        try:
+            proc = subprocess.run(cmd, capture_output=True)
+        except FileNotFoundError:
+            continue
+        if proc.returncode == 0 and dst.exists():
+            return True
+    return False
+
+
 def run_eval(program: dict, scenario: Path, workdir: Path, ticks: int) -> tuple[dict, Path | None]:
     workdir.mkdir(parents=True, exist_ok=True)
     program_path = workdir / "program.json"
@@ -491,8 +508,10 @@ def run_eval(program: dict, scenario: Path, workdir: Path, ticks: int) -> tuple[
         # The API rejects images over 5 MB of base64 (~3.7 MB raw); tall parks
         # can exceed that even downscaled, so keep shrinking until it fits.
         for px in (1500, 1100, 800, 600):
-            subprocess.run(["sips", "-Z", str(px), str(capture_path), "--out", str(small)], capture_output=True)
-            if small.exists() and small.stat().st_size * 4 / 3 < 4_900_000:
+            if not downscale(capture_path, small, px):
+                print("warning: no sips or ImageMagick; running without screenshots", file=sys.stderr)
+                break
+            if small.stat().st_size * 4 / 3 < 4_900_000:
                 shot = small
                 break
     return report, shot

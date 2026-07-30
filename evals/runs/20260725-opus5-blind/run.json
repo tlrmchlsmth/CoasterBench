@@ -1,0 +1,25 @@
+{
+  "agent_state": "fresh-sandbox",
+  "allowed_tools": "mcp__coaster__*",
+  "capabilities": ["track_library"],
+  "condition": "library",
+  "harness": "claude-code",
+  "harnesses": {
+    "claude-opus-5": "claude-code"
+  },
+  "modalities": {
+    "claude-opus-5": "text,image"
+  },
+  "mode": "library",
+  "models": [
+    "claude-opus-5"
+  ],
+  "open_note": false,
+  "open_note_source": null,
+  "orchestrator": "coaster-bench",
+  "ride_type": 51,
+  "rounds": 6,
+  "sandbox": "coaster-sub-64ba94",
+  "similarity_grace": 0.5,
+  "ticks": 25000
+}

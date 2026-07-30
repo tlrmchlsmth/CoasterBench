@@ -15,6 +15,7 @@
 #include "ZoomLevel.h"
 
 #include <optional>
+#include <vector>
 #include <string>
 
 extern uint8_t gScreenshotCountdown;
@@ -65,3 +66,11 @@ void ScreenshotGiant();
 int32_t CommandLineForScreenshot(const char** argv, int32_t argc, ScreenshotOptions* options);
 
 void CaptureImage(const CaptureOptions& options);
+
+/**
+ * Fork-only (wseaton/OpenRCT2): renders the same view CaptureImage does, but
+ * hands back RGBA pixels instead of writing a PNG. The eval harness films a
+ * ride at 20fps, where PNG-encoding and writing every frame costs far more
+ * than the render itself.
+ */
+bool CaptureImageToBuffer(const CaptureOptions& options, std::vector<uint8_t>& outRgba, int32_t& outWidth, int32_t& outHeight);

@@ -1,14 +1,15 @@
 {
+  "harness": "driver-api",
   "mode": "design",
   "models": [
     "claude-sonnet-5",
     "claude-opus-4-6",
     "claude-haiku-4-5"
   ],
-  "rounds": 6,
-  "ticks": 25000,
+  "published": false,
   "ride_type": 51,
+  "rounds": 6,
   "scenario": "Build your own Six Flags Park.SC6",
   "similarity_grace": 0.5,
-  "harness": "driver-api"
+  "ticks": 25000
 }

@@ -1,0 +1,196 @@
+{
+  "bounds": {
+    "max_tile_x": 65,
+    "max_tile_y": 79,
+    "max_z": 376,
+    "min_tile_x": 23,
+    "min_tile_y": 59,
+    "min_z": 112
+  },
+  "placed_pieces": [
+    "begin_station",
+    "middle_station",
+    "middle_station",
+    "middle_station",
+    "end_station",
+    {
+      "chain": true,
+      "t": "flat_to_up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25_to_flat"
+    },
+    "flat_to_down_25",
+    "down_25",
+    "down_25_to_down_60",
+    "down_60",
+    "down_60_to_down_25",
+    "down_25",
+    "down_25",
+    "down_25",
+    "down_25",
+    "down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "left_vertical_loop",
+    "down_25_to_flat",
+    "right_corkscrew_up",
+    "right_corkscrew_down",
+    "flat_to_left_bank",
+    "banked_left_turn_5",
+    "left_bank_to_flat",
+    "flat_to_up_25",
+    "up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "left_vertical_loop",
+    "down_25_to_flat",
+    "flat_to_right_bank",
+    "banked_right_turn_5",
+    "right_bank_to_flat",
+    "flat_to_up_25",
+    "up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25",
+    "down_25_to_flat",
+    "s_bend_right",
+    "flat_to_up_25",
+    "up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25",
+    "down_25_to_flat",
+    "right_corkscrew_up",
+    "right_corkscrew_down",
+    "left_corkscrew_up",
+    "left_corkscrew_down",
+    "flat_to_up_25",
+    "up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25_to_flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat",
+    "flat_to_right_bank",
+    "banked_right_turn_5",
+    "right_bank_to_flat",
+    "brakes",
+    "brakes",
+    "brakes",
+    "brakes",
+    "brakes",
+    "brakes",
+    "right_turn_5",
+    "brakes",
+    "brakes"
+  ],
+  "program": null,
+  "rides": [
+    {
+      "average_speed": 146031,
+      "crashed": false,
+      "excitement": 7.019999980926514,
+      "highest_drop": 30,
+      "id": 0,
+      "intensity": 9.890000343322754,
+      "max_lateral_g": 3.009999990463257,
+      "max_negative_g": -0.9800000190734864,
+      "max_positive_g": 4.78000020980835,
+      "max_speed": 1448059,
+      "nausea": 6.019999980926514,
+      "num_drops": 11,
+      "num_inversions": 5,
+      "ride_length": 646,
+      "ride_type": 51,
+      "status": "testing",
+      "tested": true,
+      "total_air_time": 61
+    }
+  ],
+  "similarity": {
+    "common_substring_share": 0.17525773195876287,
+    "edit_similarity": 0.375,
+    "mirrored": true,
+    "nearest_design": "Viper",
+    "nearest_ride_type": 19,
+    "similarity": 0.375
+  },
+  "start": {
+    "bank": 0,
+    "dir": 0,
+    "slope": 0,
+    "x": 60,
+    "y": 60,
+    "z": 112
+  }
+}

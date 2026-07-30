@@ -57,6 +57,10 @@ pub struct RideDetail {
     /// (`Ride::getTotalLength()`). Divide by 2^16 for the human-readable metres
     /// the game shows; see `report::ride_length_metres`.
     pub ride_length: i32,
+    /// One lap in seconds, as the game measures it during the test and shows
+    /// as "Ride time" (the sum of the stations' SegmentTime). 0 until a test
+    /// completes.
+    pub ride_time: i32,
     pub max_positive_g: i16,
     pub max_negative_g: i16,
     pub max_lateral_g: i16,
@@ -79,6 +83,25 @@ pub struct TrackBounds {
     pub max_z: i32,
 }
 
+/// What the game's own circuit walk finds for a ride, filled by
+/// `orct2_host_circuit_stats`.
+///
+/// `walked` counts the pieces a train actually rides: the walk starts at the
+/// station and follows the track the way the vehicle does. `total` counts every
+/// piece the ride owns on the map. Track that was placed but left off the
+/// ridden loop is the difference, and it is the one thing ratings cannot rule
+/// out: they require a complete circuit and a finished test lap, so they say
+/// nothing about track hanging off to one side.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+pub struct CircuitStats {
+    pub walked_pieces: u32,
+    pub total_pieces: u32,
+    pub orphan_pieces: u32,
+    /// The walk returned to its starting piece rather than dead-ending.
+    pub looped: bool,
+}
+
 #[cfg(not(test))]
 unsafe extern "C" {
     fn orct2_host_ride_count() -> u32;
@@ -96,6 +119,7 @@ unsafe extern "C" {
         ride_id: u16,
         track_type: u16,
         chain_lift: bool,
+        speed: u8,
         cursor: *mut TrackCursor,
         out_cost: *mut i64,
         err: *mut c_char,
@@ -104,6 +128,15 @@ unsafe extern "C" {
     fn orct2_host_ride_set_status(
         ride_id: u16,
         status: u8,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> bool;
+    fn orct2_host_ride_style(
+        ride_id: u16,
+        name: *const c_char,
+        track_color: *const c_char,
+        rail_color: *const c_char,
+        support_color: *const c_char,
         err: *mut c_char,
         err_len: usize,
     ) -> bool;
@@ -147,6 +180,24 @@ unsafe extern "C" {
     fn orct2_host_track_library_json() -> *mut c_char;
     fn orct2_host_string_free(s: *mut c_char);
     fn orct2_host_track_mirror(track_type: u16) -> u16;
+    fn orct2_host_circuit_stats(ride_id: u16, out: *mut CircuitStats) -> bool;
+    fn orct2_host_save_park(path: *const c_char) -> bool;
+    fn orct2_host_load_park(path: *const c_char) -> bool;
+    fn orct2_host_capture_frame(
+        zoom: i32,
+        rotation: u8,
+        fit_track: bool,
+        out: *mut u8,
+        cap: usize,
+    ) -> usize;
+    fn orct2_host_capture_size(
+        zoom: i32,
+        rotation: u8,
+        fit_track: bool,
+        out_w: *mut u32,
+        out_h: *mut u32,
+    ) -> bool;
+    fn orct2_host_vehicle_status(ride_id: u16, out_status: *mut u8) -> bool;
 }
 
 #[cfg(test)]
@@ -210,10 +261,14 @@ pub fn ride_create(ride_type: u16) -> Result<u16, String> {
 }
 
 /// Places one piece at the cursor and advances it. Returns the piece cost.
+/// Places one piece and advances the cursor. `speed` is the brake/booster
+/// speed stored on the element; the game only reads it for brakes, block
+/// brakes and boosters (see `pieces::takes_speed`).
 pub fn track_place(
     ride_id: u16,
     track_type: u16,
     chain_lift: bool,
+    speed: u8,
     cursor: &mut TrackCursor,
 ) -> Result<i64, String> {
     let mut cost: i64 = 0;
@@ -223,6 +278,7 @@ pub fn track_place(
             ride_id,
             track_type,
             chain_lift,
+            speed,
             cursor,
             &mut cost,
             err.as_mut_ptr(),
@@ -239,6 +295,39 @@ pub fn track_place(
 pub fn ride_set_status(ride_id: u16, status: u8) -> Result<(), String> {
     let mut err = err_buf();
     if unsafe { orct2_host_ride_set_status(ride_id, status, err.as_mut_ptr(), ERR_BUF_LEN) } {
+        Ok(())
+    } else {
+        Err(err_to_string(&err))
+    }
+}
+
+/// Names a ride and sets colour scheme zero, which is the scheme all
+/// agent-placed track uses. The C++ side validates the ordinary game actions
+/// before applying any of them.
+pub fn ride_style(
+    ride_id: u16,
+    name: &str,
+    track_color: &str,
+    rail_color: &str,
+    support_color: &str,
+) -> Result<(), String> {
+    let name = CString::new(name).map_err(|_| "ride name contains a NUL byte")?;
+    let track_color = CString::new(track_color).map_err(|_| "track color contains a NUL byte")?;
+    let rail_color = CString::new(rail_color).map_err(|_| "rail color contains a NUL byte")?;
+    let support_color =
+        CString::new(support_color).map_err(|_| "support color contains a NUL byte")?;
+    let mut err = err_buf();
+    if unsafe {
+        orct2_host_ride_style(
+            ride_id,
+            name.as_ptr(),
+            track_color.as_ptr(),
+            rail_color.as_ptr(),
+            support_color.as_ptr(),
+            err.as_mut_ptr(),
+            ERR_BUF_LEN,
+        )
+    } {
         Ok(())
     } else {
         Err(err_to_string(&err))
@@ -297,6 +386,50 @@ pub fn capture(path: &str, zoom: i32, rotation: u8, fit_track: bool, xray: bool)
 pub fn track_bounds() -> Option<TrackBounds> {
     let mut bounds = TrackBounds::default();
     unsafe { orct2_host_track_bounds(&mut bounds) }.then_some(bounds)
+}
+
+/// Writes the park to `path` as a .park save.
+pub fn save_park(path: &str) -> bool {
+    let Ok(cstr) = CString::new(path) else {
+        return false;
+    };
+    unsafe { orct2_host_save_park(cstr.as_ptr()) }
+}
+
+/// Replaces the live game state with a previously saved .park snapshot.
+pub fn load_park(path: &str) -> bool {
+    let Ok(cstr) = CString::new(path) else {
+        return false;
+    };
+    unsafe { orct2_host_load_park(cstr.as_ptr()) }
+}
+
+/// Frame size for the current track, so a caller can size one buffer and reuse
+/// it for every frame of a replay.
+pub fn capture_size(zoom: i32, rotation: u8, fit_track: bool) -> Option<(u32, u32)> {
+    let (mut w, mut h) = (0u32, 0u32);
+    unsafe { orct2_host_capture_size(zoom, rotation, fit_track, &mut w, &mut h) }.then_some((w, h))
+}
+
+/// Renders one frame as RGBA into `buf`, returning the bytes written. Zero
+/// means the render failed or the buffer was too small.
+pub fn capture_frame(zoom: i32, rotation: u8, fit_track: bool, buf: &mut [u8]) -> usize {
+    unsafe { orct2_host_capture_frame(zoom, rotation, fit_track, buf.as_mut_ptr(), buf.len()) }
+}
+
+/// `Vehicle::Status` of the ride's lead train: 0 movingToEndOfStation,
+/// 1 waitingForPassengers, 2 waitingToDepart, 3 departing, 4 travelling,
+/// 5 arriving, 6 unloadingPassengers.
+pub fn vehicle_status(ride_id: u16) -> Option<u8> {
+    let mut status = 0u8;
+    unsafe { orct2_host_vehicle_status(ride_id, &mut status) }.then_some(status)
+}
+
+/// Walks `ride_id`'s circuit the way its trains do. None when the ride has no
+/// station to start from, which is also true of a ride that was never built.
+pub fn circuit_stats(ride_id: u16) -> Option<CircuitStats> {
+    let mut stats = CircuitStats::default();
+    unsafe { orct2_host_circuit_stats(ride_id, &mut stats) }.then_some(stats)
 }
 
 /// Advances the game simulation by `n` ticks (40 ticks = 1 game second).
@@ -378,7 +511,7 @@ pub fn track_mirror(track_type: u16) -> u16 {
 // Link stubs for `cargo test`: the C++ host only exists inside the game
 // binary, so the unit-test binary needs these symbols to link. Unit tests
 // cover pure logic only (parsing, protocol, formatting); anything that
-// touches game state is exercised end-to-end through openrct2-cli.
+// touches game state is exercised end-to-end through coasterbench-cli.
 #[cfg(test)]
 mod test_stubs {
     #![allow(clippy::missing_safety_doc)]
@@ -407,10 +540,12 @@ mod test_stubs {
     ) -> bool {
         false
     }
+    #[allow(clippy::too_many_arguments)] // mirrors the C ABI it stands in for
     pub unsafe fn orct2_host_track_place(
         _r: u16,
         _t: u16,
         _c: bool,
+        _s: u8,
         _cur: *mut TrackCursor,
         _cost: *mut i64,
         _e: *mut c_char,
@@ -419,6 +554,18 @@ mod test_stubs {
         false
     }
     pub unsafe fn orct2_host_ride_set_status(_r: u16, _s: u8, _e: *mut c_char, _l: usize) -> bool {
+        false
+    }
+    #[allow(clippy::too_many_arguments)] // mirrors the C ABI it stands in for
+    pub unsafe fn orct2_host_ride_style(
+        _r: u16,
+        _n: *const c_char,
+        _t: *const c_char,
+        _a: *const c_char,
+        _s: *const c_char,
+        _e: *mut c_char,
+        _l: usize,
+    ) -> bool {
         false
     }
     pub unsafe fn orct2_host_ride_detail(_r: u16, _o: *mut RideDetail) -> bool {
@@ -437,6 +584,36 @@ mod test_stubs {
         false
     }
     pub unsafe fn orct2_host_track_bounds(_o: *mut crate::host::TrackBounds) -> bool {
+        false
+    }
+    pub unsafe fn orct2_host_circuit_stats(_r: u16, _o: *mut crate::host::CircuitStats) -> bool {
+        false
+    }
+    pub unsafe fn orct2_host_save_park(_p: *const c_char) -> bool {
+        false
+    }
+    pub unsafe fn orct2_host_load_park(_p: *const c_char) -> bool {
+        false
+    }
+    pub unsafe fn orct2_host_capture_frame(
+        _z: i32,
+        _r: u8,
+        _f: bool,
+        _o: *mut u8,
+        _c: usize,
+    ) -> usize {
+        0
+    }
+    pub unsafe fn orct2_host_capture_size(
+        _z: i32,
+        _r: u8,
+        _f: bool,
+        _w: *mut u32,
+        _h: *mut u32,
+    ) -> bool {
+        false
+    }
+    pub unsafe fn orct2_host_vehicle_status(_r: u16, _s: *mut u8) -> bool {
         false
     }
     pub unsafe fn orct2_host_entrance_place(

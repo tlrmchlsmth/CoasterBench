@@ -1,0 +1,43 @@
+# openshell sandbox create --name <name> --from localhost/coaster-sandbox \
+#     --policy rust/coaster-bench/sandbox/policy.yaml --provider claude-sub -- sleep infinity
+#
+# The provider injects its own network block (anthropic, statsig, sentry); don't
+# copy it here. Only the game MCP endpoint is authored, and its port must match
+# coaster-bench --port.
+version: 1
+
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /usr
+    - /lib
+    - /proc
+    - /dev/urandom
+    - /etc
+    - /var/log
+  read_write:
+    - /sandbox
+    - /tmp
+    - /dev/null
+    - /home/sandbox
+
+landlock:
+  compatibility: best_effort
+
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox
+
+network_policies:
+  coaster_game:
+    name: coaster-game-mcp
+    endpoints:
+      - host: host.containers.internal
+        port: 8791
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+    # Kernel-resolved paths: Claude Code 2.x is the .exe, not node.
+    binaries:
+      - path: /usr/local/bin/node
+      - path: /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe

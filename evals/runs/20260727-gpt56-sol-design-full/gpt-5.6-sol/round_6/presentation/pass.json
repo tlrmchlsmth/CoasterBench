@@ -1,0 +1,21 @@
+{
+  "agent_version": "codex-cli 0.145.0-alpha.18",
+  "completed_at": "2026-07-27T13:54:38.000Z",
+  "harness": "codex",
+  "kind": "posthoc-presentation",
+  "model": "gpt-5.6-sol",
+  "presentation": {
+    "name": "Alpine Maelstrom",
+    "rail_color": "icy_blue",
+    "support_color": "grey",
+    "track_color": "dark_blue"
+  },
+  "reasoning_effort": "medium",
+  "score_after": 7.809999942779541,
+  "score_before": 7.809999942779541,
+  "session_error": null,
+  "source_park_sha256": "5ee9416a656550d29ff4ff886bf24e0ac947ec40331dc98b22fbaf8e126679b0",
+  "source_report_sha256": "6e8ef3dbeb3353dee02e2d1491e10726473a59cc59e2ef98282d94aaea5388c1",
+  "styled_park_sha256": "999d92ac35f6ef5b4ca890754e297d5e505602e4e2151532652c5495fe680f96",
+  "styled_report_sha256": "2fc1d13ddec8aab3f8764c52e51ba279a6164685c51cf04e309f2537872e46e7"
+}

@@ -1,0 +1,33 @@
+# Shared config for the three crates, which are separate workspaces:
+#
+#   cargo deny --manifest-path rust/<crate>/Cargo.toml --config rust/deny.toml check
+#
+# Needs cargo-deny >= 0.20 for that flag position.
+#
+# orct2-agent links into the GPL-3.0-or-later binary, so every licence below is
+# GPL-3.0 compatible. A dependency under anything else fails the check instead
+# of quietly making the release undistributable.
+
+[licenses]
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "GPL-3.0-or-later",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "allow"
+
+[advisories]
+# Unmaintained and yanked crates stay warnings; only vulnerabilities fail.
+yanked = "warn"

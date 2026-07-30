@@ -1,0 +1,290 @@
+{
+  "pieces": [
+    "begin_station",
+    "middle_station",
+    "middle_station",
+    "end_station",
+    {
+      "chain": true,
+      "t": "flat_to_up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25_to_flat"
+    },
+    "flat_to_down_25",
+    "down_25_to_down_60",
+    "down_60",
+    "down_60",
+    "down_60",
+    "down_60",
+    "down_60",
+    "down_60",
+    "down_60_to_down_25",
+    "down_25",
+    "down_25_to_flat",
+    {
+      "speed": 25,
+      "t": "brakes"
+    },
+    "flat_to_up_25",
+    "up_25_to_flat",
+    "flat_to_up_25",
+    "right_vertical_loop",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25",
+    "up_25",
+    "up_25",
+    "up_25",
+    "up_25_to_right_bank",
+    "banked_right_turn_5",
+    "banked_right_turn_5",
+    "right_bank_to_flat",
+    "flat_to_down_25",
+    "down_25_to_down_60",
+    "down_60_to_down_25",
+    "down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "left_vertical_loop",
+    "down_25_to_flat",
+    "flat_to_down_25",
+    "down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25_to_flat",
+    "flat",
+    "flat",
+    "flat_to_down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25",
+    "down_25_to_flat",
+    {
+      "speed": 21,
+      "t": "brakes"
+    },
+    {
+      "speed": 21,
+      "t": "brakes"
+    },
+    "left_corkscrew_up",
+    "right_corkscrew_down",
+    "flat_to_down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25",
+    "down_25_to_flat",
+    "right_corkscrew_up",
+    "left_corkscrew_down",
+    "flat_to_up_25",
+    "up_25",
+    "up_25_to_flat",
+    "right_corkscrew_up",
+    "left_corkscrew_down",
+    "flat_to_down_25",
+    "down_25",
+    "down_25_to_flat",
+    {
+      "speed": 18,
+      "t": "brakes"
+    },
+    "right_corkscrew_up",
+    "left_corkscrew_down",
+    "flat_to_up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25_to_flat",
+    "left_corkscrew_up",
+    "right_corkscrew_down",
+    {
+      "speed": 17,
+      "t": "brakes"
+    },
+    "s_bend_left",
+    "flat_to_right_bank",
+    "banked_right_turn_5",
+    "banked_right_turn_5",
+    "right_bank_to_flat",
+    {
+      "speed": 20,
+      "t": "booster"
+    },
+    {
+      "speed": 20,
+      "t": "booster"
+    },
+    {
+      "speed": 20,
+      "t": "booster"
+    },
+    {
+      "speed": 20,
+      "t": "booster"
+    },
+    {
+      "speed": 10,
+      "t": "brakes"
+    },
+    {
+      "speed": 10,
+      "t": "brakes"
+    },
+    {
+      "speed": 10,
+      "t": "brakes"
+    },
+    {
+      "speed": 10,
+      "t": "brakes"
+    },
+    "flat"
+  ],
+  "ride_type": 51,
+  "start": {
+    "dir": 2,
+    "x": 34,
+    "y": 40
+  }
+}

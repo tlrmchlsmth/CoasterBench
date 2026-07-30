@@ -22,6 +22,11 @@ pub struct Art {
 
 pub struct ArtStore {
     artifact_base: String,
+    /// Resize artifact-store images at the edge.
+    edge_resize: bool,
+    /// Resolve to artifact-store URLs even when the local file is right there,
+    /// so a preview deploy is HTML only (the artifacts are ~250 MB).
+    remote_only: bool,
     /// Per-run artifacts.json contents, loaded on first use.
     manifests: RefCell<HashMap<PathBuf, HashSet<String>>>,
     /// File names of previews uploaded to the artifact store.
@@ -30,6 +35,18 @@ pub struct ArtStore {
     /// Downloads of remote-only artifacts, kept across builds: thumbnail and
     /// og-card generation need actual pixels.
     cache_dir: PathBuf,
+}
+
+/// Rewrites an artifact-store URL to resize at the edge. Off by default: a zone
+/// without transformations answers /cdn-cgi/image/ with a 404.
+pub fn edge_resized(url: &str, width: u32) -> Option<String> {
+    let (origin, path) = url.split_once("://").and_then(|(scheme, rest)| {
+        rest.split_once('/')
+            .map(|(host, path)| (format!("{scheme}://{host}"), path.to_string()))
+    })?;
+    Some(format!(
+        "{origin}/cdn-cgi/image/width={width},quality=82,format=auto/{path}"
+    ))
 }
 
 fn read_manifest(path: &Path) -> Result<HashSet<String>> {
@@ -45,6 +62,8 @@ impl ArtStore {
     pub fn new(artifact_base: &str, previews_dir: &Path, previews_manifest: &Path) -> Result<Self> {
         Ok(Self {
             artifact_base: artifact_base.trim_end_matches('/').to_string(),
+            edge_resize: false,
+            remote_only: false,
             manifests: RefCell::new(HashMap::new()),
             previews: read_manifest(previews_manifest)?,
             previews_dir: previews_dir.to_path_buf(),
@@ -52,12 +71,65 @@ impl ArtStore {
         })
     }
 
+    /// Ask Cloudflare to resize artifact-store images at the edge.
+    pub fn edge_resize(mut self, yes: bool) -> Self {
+        self.edge_resize = yes;
+        self
+    }
+
+    /// Fails the build unless the zone answers a transformed URL: otherwise
+    /// every capture 404s, silently and only in production.
+    pub fn check_edge_resize(&self, sample: Option<&str>) -> Result<()> {
+        if !self.edge_resize {
+            return Ok(());
+        }
+        // A real artifact: a made-up path 404s either way.
+        let Some(sample) = sample else {
+            return Ok(()); // nothing published to transform yet
+        };
+        let probe = edge_resized(sample, 32).context("artifact URL is not a URL")?;
+        let response = ureq::get(&probe)
+            .header("User-Agent", "coasterbench-site")
+            .call();
+        match response {
+            Ok(res) if res.status().is_success() => Ok(()),
+            other => {
+                let status = match other {
+                    Ok(res) => res.status().as_u16().to_string(),
+                    Err(e) => e.to_string(),
+                };
+                anyhow::bail!(
+                    "--cf-images is on but {probe} answered {status}.\n\
+                     Enable image transformations for the zone first (Cloudflare \
+                     dashboard -> the zone -> Images -> Transformations), or drop \
+                     the flag: every capture on the site would 404."
+                )
+            }
+        }
+    }
+
+    /// An edge-resized URL for `art`, when that is switched on and the artifact
+    /// actually lives in the store.
+    pub fn resized_url(&self, art: &Art, width: u32) -> Option<String> {
+        if !self.edge_resize {
+            return None;
+        }
+        art.url.as_deref().and_then(|url| edge_resized(url, width))
+    }
+
+    /// Serve published artifacts from their URLs, ignoring local copies.
+    pub fn remote_only(mut self, yes: bool) -> Self {
+        self.remote_only = yes;
+        self
+    }
+
     /// Resolves one run-relative artifact path, or None when the file is
     /// neither on disk nor in the run's manifest.
     pub fn art(&self, run_dir: &Path, rel: &Path) -> Option<Art> {
         let name = rel.file_name()?.to_str()?.to_string();
         let local = run_dir.join(rel);
-        if local.is_file() {
+        // Unpublished artifacts still fall back to the local file.
+        if local.is_file() && !(self.remote_only && self.is_published(run_dir, rel)) {
             return Some(Art {
                 name,
                 local: Some(local),
@@ -65,6 +137,26 @@ impl ArtStore {
             });
         }
         let key = rel.to_str()?.replace('\\', "/");
+        if !self.manifest_contains(run_dir, &key) {
+            return None;
+        }
+        let run = run_dir.file_name()?.to_str()?;
+        Some(Art {
+            name,
+            local: None,
+            url: Some(format!("{}/runs/{run}/{key}", self.artifact_base)),
+        })
+    }
+
+    /// Listed in the run's upload manifest, so a URL exists.
+    fn is_published(&self, run_dir: &Path, rel: &Path) -> bool {
+        rel.to_str()
+            .map(|key| key.replace('\\', "/"))
+            .is_some_and(|key| self.manifest_contains(run_dir, &key))
+    }
+
+    /// Loads the manifest on first ask.
+    fn manifest_contains(&self, run_dir: &Path, key: &str) -> bool {
         let mut manifests = self.manifests.borrow_mut();
         let manifest = match manifests.entry(run_dir.to_path_buf()) {
             std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
@@ -76,22 +168,14 @@ impl ArtStore {
                 e.insert(loaded)
             }
         };
-        if !manifest.contains(&key) {
-            return None;
-        }
-        let run = run_dir.file_name()?.to_str()?;
-        Some(Art {
-            name,
-            local: None,
-            url: Some(format!("{}/runs/{run}/{key}", self.artifact_base)),
-        })
+        manifest.contains(key)
     }
 
     /// A track design's preview PNG: the local render, else the artifact store.
     pub fn preview(&self, design_name: &str) -> Option<Art> {
         let file = format!("{}.png", crate::model::sanitise_name(design_name));
         let local = self.previews_dir.join(&file);
-        if local.is_file() {
+        if local.is_file() && !(self.remote_only && self.previews.contains(&file)) {
             return Some(Art {
                 name: file,
                 local: Some(local),

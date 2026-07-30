@@ -28,6 +28,14 @@
 <div class="window">
   <div class="titlebar"><span>{{ model.rounds.len() }} round(s)</span><span class="btn"></span></div>
   <div class="body">
+    {# Colour carries none of these alone: shape does too. #}
+    <div class="dna-key">
+      <span><i class="k-lift"></i>chain lift</span>
+      <span><i class="k-inv"></i>inversion</span>
+      <span><i class="k-speed"></i>brake / booster</span>
+      <span><i class="k-ghost"></i>round before</span>
+      <span class="dim">height is the track's real elevation, walked from the piece list</span>
+    </div>
     <div class="round-grid">
     {%- for round in model.rounds %}
       {% call macros::round_block(round, model.model.as_str()) %}{% endcall %}

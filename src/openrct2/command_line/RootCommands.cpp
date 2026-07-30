@@ -22,6 +22,7 @@
 #include "../park/ParkFile.h"
 #include "../platform/Crash.h"
 #include "../platform/Platform.h"
+#include "../rustbridge/HarnessVersion.h"
 #include "../scripting/ScriptEngine.h"
 #include "CommandLine.hpp"
 
@@ -449,6 +450,8 @@ namespace OpenRCT2
 
     static void PrintVersion()
     {
+        Console::WriteFormat("CoasterBench %s (modified OpenRCT2, https://github.com/wseaton/CoasterBench)", kCoasterBenchVersion);
+        Console::WriteLine();
         u8string versionInfo = gVersionInfoFull;
         Console::WriteLine(versionInfo.c_str());
         Console::WriteFormat("%s (%s)", OPENRCT2_PLATFORM, OPENRCT2_ARCHITECTURE);

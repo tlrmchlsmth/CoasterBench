@@ -9,6 +9,19 @@
 #include <stdlib.h>
 
 /**
+ * What the game's own construction window starts a brake or booster at
+ * (`_currentBrakeSpeed = 8`), and therefore what a piece placed without an
+ * explicit speed should get. Zero is not a neutral default: it makes a booster
+ * inert and a brake a full stop.
+ */
+#define Orct2DEFAULT_BRAKE_SPEED 8
+
+/**
+ * The game refuses anything above this (`kMaximumTrackSpeed`).
+ */
+#define Orct2MAX_BRAKE_SPEED 30
+
+/**
  * Result of executing a track program, later folded into the eval report.
  */
 typedef struct Orct2ProgramOutcome Orct2ProgramOutcome;
@@ -69,6 +82,12 @@ typedef struct Orct2RideDetail {
    * the game shows; see `report::ride_length_metres`.
    */
   int32_t ride_length;
+  /**
+   * One lap in seconds, as the game measures it during the test and shows
+   * as "Ride time" (the sum of the stations' SegmentTime). 0 until a test
+   * completes.
+   */
+  int32_t ride_time;
   int16_t max_positive_g;
   int16_t max_negative_g;
   int16_t max_lateral_g;
@@ -90,6 +109,27 @@ typedef struct Orct2TrackBounds {
   int32_t min_z;
   int32_t max_z;
 } Orct2TrackBounds;
+
+/**
+ * What the game's own circuit walk finds for a ride, filled by
+ * `orct2_host_circuit_stats`.
+ *
+ * `walked` counts the pieces a train actually rides: the walk starts at the
+ * station and follows the track the way the vehicle does. `total` counts every
+ * piece the ride owns on the map. Track that was placed but left off the
+ * ridden loop is the difference, and it is the one thing ratings cannot rule
+ * out: they require a complete circuit and a finished test lap, so they say
+ * nothing about track hanging off to one side.
+ */
+typedef struct Orct2CircuitStats {
+  uint32_t walked_pieces;
+  uint32_t total_pieces;
+  uint32_t orphan_pieces;
+  /**
+   * The walk returned to its starting piece rather than dead-ending.
+   */
+  bool looped;
+} Orct2CircuitStats;
 
 #ifdef __cplusplus
 extern "C" {
@@ -144,6 +184,22 @@ int32_t orct2_agent_capture(const char *path,
                             bool xray);
 
 /**
+ * Films the park's coaster into `path` as an mp4 (ffmpeg on PATH does the
+ * encoding), starting from the train leaving the station and ending at its next
+ * departure, which is one whole cycle and so loops. `max_seconds` bounds a ride
+ * that never comes back round (a valleyed circuit, or a lap longer than the
+ * cap); those clips are excerpts and say so in the sidecar. Ticks the simulation on, so
+ * call it after the report and any screenshot. Returns 0 on success.
+ *
+ * This is how a round recorded before replays existed gets one: rerun its
+ * track program through `coasterbench-cli eval --replay`.
+ *
+ * # Safety
+ * `path` must be null or a valid NUL-terminated string.
+ */
+int32_t orct2_agent_capture_replay(const char *path, uint32_t max_seconds, int32_t zoom);
+
+/**
  * Runs the MCP server on bind:port (bind defaults to 127.0.0.1 when null),
  * blocking the game thread. Tool calls execute game actions directly;
  * `finish_and_test` advances the simulation inline. Returns nonzero if the
@@ -152,7 +208,7 @@ int32_t orct2_agent_capture(const char *path,
  * # Safety
  * `bind` must be null or a valid NUL-terminated string.
  */
-int32_t orct2_agent_serve(const char *bind, uint16_t port);
+int32_t orct2_agent_serve(const char *bind, uint16_t port, uint16_t control_port);
 
 /**
  * Writes the stock track design library to `out_path` as JSON:
@@ -165,7 +221,7 @@ int32_t orct2_agent_serve(const char *bind, uint16_t port);
 int32_t orct2_agent_dump_library(const char *out_path);
 
 /**
- * Called by `openrct2-cli eval` after the tick loop: logs a per-ride summary
+ * Called by `coasterbench-cli eval` after the tick loop: logs a per-ride summary
  * through the host so results land in the game's console output.
  */
 void orct2_agent_eval_summary(void);
@@ -188,6 +244,7 @@ extern bool orct2_host_ride_create(uint16_t ride_type,
 extern bool orct2_host_track_place(uint16_t ride_id,
                                    uint16_t track_type,
                                    bool chain_lift,
+                                   uint8_t speed,
                                    struct Orct2TrackCursor *cursor,
                                    int64_t *out_cost,
                                    char *err,
@@ -197,6 +254,14 @@ extern bool orct2_host_ride_set_status(uint16_t ride_id,
                                        uint8_t status,
                                        char *err,
                                        uintptr_t err_len);
+
+extern bool orct2_host_ride_style(uint16_t ride_id,
+                                  const char *name,
+                                  const char *track_color,
+                                  const char *rail_color,
+                                  const char *support_color,
+                                  char *err,
+                                  uintptr_t err_len);
 
 extern bool orct2_host_ride_detail(uint16_t ride_id, struct Orct2RideDetail *out);
 
@@ -245,6 +310,26 @@ extern char *orct2_host_track_library_json(void);
 extern void orct2_host_string_free(char *s);
 
 extern uint16_t orct2_host_track_mirror(uint16_t track_type);
+
+extern bool orct2_host_circuit_stats(uint16_t ride_id, struct Orct2CircuitStats *out);
+
+extern bool orct2_host_save_park(const char *path);
+
+extern bool orct2_host_load_park(const char *path);
+
+extern uintptr_t orct2_host_capture_frame(int32_t zoom,
+                                          uint8_t rotation,
+                                          bool fit_track,
+                                          uint8_t *out,
+                                          uintptr_t cap);
+
+extern bool orct2_host_capture_size(int32_t zoom,
+                                    uint8_t rotation,
+                                    bool fit_track,
+                                    uint32_t *out_w,
+                                    uint32_t *out_h);
+
+extern bool orct2_host_vehicle_status(uint16_t ride_id, uint8_t *out_status);
 
 #ifdef __cplusplus
 }  // extern "C"

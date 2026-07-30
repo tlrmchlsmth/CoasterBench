@@ -9,6 +9,10 @@ file(GLOB_RECURSE OPENRCT2_CLI_SOURCES
 add_executable(openrct2-cli ${OPENRCT2_CLI_SOURCES})
 add_executable(OpenRCT2::openrct2-cli ALIAS openrct2-cli)
 
+# Fork: a modified openrct2-cli ships under its own name. Target name stays
+# upstream's so the solution files, Android build and CI targets don't change.
+set_target_properties(openrct2-cli PROPERTIES OUTPUT_NAME coasterbench-cli)
+
 target_include_directories(openrct2-cli PRIVATE "${CMAKE_CURRENT_LIST_DIR}/..")
 ipo_set_target_properties(openrct2-cli)
 if (EMSCRIPTEN)

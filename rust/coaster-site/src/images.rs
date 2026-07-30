@@ -434,21 +434,90 @@ fn draw_name_plate(
     );
 }
 
+/// Cards are JPEG: as PNG the set came to 98 MB of a deploy that only Slack's
+/// and Twitter's crawlers ever fetch.
 fn save_card(card: RgbImage, dest: &Path) -> Result<()> {
-    DynamicImage::ImageRgb8(card)
-        .save(dest)
-        .with_context(|| format!("writing {}", dest.display()))
+    let mut file = std::io::BufWriter::new(
+        std::fs::File::create(dest).with_context(|| format!("writing {}", dest.display()))?,
+    );
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut file, 86)
+        .encode_image(&card)
+        .with_context(|| format!("encoding {}", dest.display()))
 }
 
 /// Writes a <=280px thumbnail of `shot` at `dest`, preserving aspect ratio.
-pub fn write_thumbnail(shot: &Path, dest: &Path) -> Result<()> {
+/// Derives every display copy in parallel, before any page is rendered:
+/// decoding 48-megapixel PNGs is the cost, and it parallelises perfectly.
+pub fn derive_all(jobs: &[(std::path::PathBuf, std::path::PathBuf, u32)]) -> Result<()> {
+    use rayon::prelude::*;
+    jobs.par_iter()
+        .try_for_each(|(src, dest, max_width)| write_poster(src, dest, *max_width))
+}
+
+/// A downscaled JPEG copy for display. A poster is fetched eagerly even when
+/// the video is `preload="none"`, and the stills are up to 5536px of PNG.
+pub fn write_poster(shot: &Path, dest: &Path, max_width: u32) -> Result<()> {
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    // Cached across builds, which clean `assets/`.
+    if let Some(cached) = derived_cache(shot, dest, max_width)
+        && cached.is_file()
+    {
+        std::fs::copy(&cached, dest)?;
+        return Ok(());
+    }
     let img = image::open(shot).with_context(|| format!("reading {}", shot.display()))?;
-    img.resize(280, 280, FilterType::Lanczos3)
-        .save(dest)
-        .with_context(|| format!("writing {}", dest.display()))
+    let img = if img.width() > max_width {
+        // Triangle, not Lanczos3: indistinguishable at a 5x reduction of a
+        // pixel-art render, and far cheaper.
+        img.resize(max_width, u32::MAX, FilterType::Triangle)
+    } else {
+        img
+    };
+    let mut file = std::io::BufWriter::new(
+        std::fs::File::create(dest).with_context(|| format!("writing {}", dest.display()))?,
+    );
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut file, 82);
+    encoder
+        .encode_image(&img.to_rgb8())
+        .with_context(|| format!("encoding {}", dest.display()))?;
+    drop(file);
+    if let Some(cached) = derived_cache(shot, dest, max_width) {
+        if let Some(parent) = cached.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::copy(dest, &cached);
+    }
+    Ok(())
+}
+
+/// Keyed on the source's path, size and mtime, so an edited capture misses.
+fn derived_cache(shot: &Path, dest: &Path, max_width: u32) -> Option<std::path::PathBuf> {
+    let meta = std::fs::metadata(shot).ok()?;
+    let stamp = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(
+        &(shot.to_string_lossy(), meta.len(), stamp, max_width),
+        &mut hash,
+    );
+    let key = std::hash::Hasher::finish(&hash);
+    let ext = dest.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
+    Some(
+        std::env::temp_dir()
+            .join("coaster-site-derived")
+            .join(format!("{key:x}.{ext}")),
+    )
+}
+
+/// The leaderboard's row thumbnail. JPEG: as PNG these cost 2.3 MB an index.
+pub fn write_thumbnail(shot: &Path, dest: &Path) -> Result<()> {
+    write_poster(shot, dest, 280)
 }
 
 #[cfg(test)]
@@ -497,7 +566,7 @@ mod tests {
         DynamicImage::ImageRgb8(RgbImage::from_pixel(280, 180, Rgb([0x3a, 0x6b, 0x2f])))
             .save(&shot)
             .unwrap();
-        let dest = dir.join("card.png");
+        let dest = dir.join("card.jpg");
         write_compare_card(
             "Twister Roller Coaster",
             "design",

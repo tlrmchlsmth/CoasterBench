@@ -1,5 +1,41 @@
-// Index table facets, screenshot rotators, studied-design strips. Everything
-// is one delegated click handler; no framework, no bundle.
+// Facets, rotators, strips, chart tooltips, lightbox, replays. One delegated
+// click handler plus a few small modules; no framework, no bundle.
+function applyFacets(active) {
+  var shown = 0;
+  document.querySelectorAll('.run-table tbody tr').forEach(function (row) {
+    var show = true;
+    if (active.mode && row.dataset.mode !== active.mode) show = false;
+    if (active.coaster && row.dataset.coaster !== active.coaster) show = false;
+    if (active.harness && row.dataset.harness !== active.harness) show = false;
+    if (active.model && row.dataset.model !== active.model) show = false;
+    row.style.display = show ? '' : 'none';
+    if (show) shown++;
+  });
+  // A group or a whole board with nothing left in it should go, not sit there
+  // as an empty table with a heading.
+  document.querySelectorAll('.board-group').forEach(function (group) {
+    group.hidden = !group.querySelector('tbody tr:not([style*="display: none"])');
+  });
+  document.querySelectorAll('.board').forEach(function (board) {
+    board.hidden = !board.querySelector('.board-group:not([hidden])');
+  });
+  var empty = document.getElementById('no-rows');
+  if (empty) empty.hidden = shown > 0;
+}
+
+// The filtered, sorted view someone is looking at is worth linking to.
+function writeState(active) {
+  var params = new URLSearchParams();
+  Object.keys(active).forEach(function (k) { if (active[k]) params.set(k, active[k]); });
+  var sorted = document.querySelector('.run-table th.sorted-asc, .run-table th.sorted-desc');
+  if (sorted && !(sorted.dataset.sort === 'score' && sorted.classList.contains('sorted-desc'))) {
+    params.set('sort', sorted.dataset.sort);
+    params.set('dir', sorted.classList.contains('sorted-asc') ? 'asc' : 'desc');
+  }
+  var query = params.toString();
+  history.replaceState(null, '', query ? '?' + query : location.pathname);
+}
+
 document.addEventListener('click', function (e) {
   var fb = e.target.closest('.facet-btn');
   if (fb) {
@@ -10,14 +46,8 @@ document.addEventListener('click', function (e) {
     document.querySelectorAll('.facet-btn.active').forEach(function (b) {
       if (b.dataset.value) active[b.dataset.facet] = b.dataset.value;
     });
-    document.querySelectorAll('.run-table tbody tr').forEach(function (row) {
-      var show = true;
-      if (active.mode && row.dataset.mode !== active.mode) show = false;
-      if (active.coaster && row.dataset.coaster !== active.coaster) show = false;
-      if (active.harness && row.dataset.harness !== active.harness) show = false;
-      if (active.model && row.dataset.model !== active.model) show = false;
-      row.style.display = show ? '' : 'none';
-    });
+    applyFacets(active);
+    writeState(active);
     return;
   }
 
@@ -47,6 +77,11 @@ document.addEventListener('click', function (e) {
       return sign * String(x).localeCompare(String(y));
     });
     rows.forEach(function (row) { body.appendChild(row); });
+    var active = {};
+    document.querySelectorAll('.facet-btn.active').forEach(function (b) {
+      if (b.dataset.value) active[b.dataset.facet] = b.dataset.value;
+    });
+    writeState(active);
     return;
   }
 
@@ -63,13 +98,52 @@ document.addEventListener('click', function (e) {
   if (!btn) return;
   var rot = btn.closest('.rotator');
   var shots = JSON.parse(rot.dataset.shots);
+  var fulls = JSON.parse(rot.dataset.fulls || '[]');
   var step = btn.classList.contains('rot-next') ? 1 : shots.length - 1;
   var i = (parseInt(rot.dataset.i, 10) + step) % shots.length;
   var labels = JSON.parse(rot.dataset.labels);
   rot.dataset.i = i;
-  rot.querySelector('img').src = shots[i];
+  var img = rot.querySelector('img');
+  img.src = shots[i];
+  if (fulls[i]) img.dataset.full = fulls[i];
   rot.querySelector('.rot-count').textContent = labels[i];
 });
+
+// Restore a shared view: facets first, then the sort column.
+(function () {
+  if (!document.querySelector('.run-table')) return;
+  var params = new URLSearchParams(location.search);
+  var active = {};
+  ['mode', 'coaster', 'harness', 'model'].forEach(function (facet) {
+    var want = params.get(facet);
+    if (!want) return;
+    var btn = document.querySelector('.facet-btn[data-facet="' + facet + '"][data-value="' + CSS.escape(want) + '"]');
+    if (!btn) return;
+    document.querySelectorAll('.facet-btn[data-facet="' + facet + '"]').forEach(function (b) {
+      b.classList.remove('active');
+    });
+    btn.classList.add('active');
+    active[facet] = want;
+  });
+  if (Object.keys(active).length) applyFacets(active);
+  var sort = params.get('sort');
+  if (sort) {
+    var th = document.querySelector('.run-table th[data-sort="' + CSS.escape(sort) + '"]');
+    // Click it, so sorting has one implementation; twice to flip direction.
+    if (th) {
+      th.click();
+      if ((params.get('dir') || 'desc') !== (th.classList.contains('sorted-asc') ? 'asc' : 'desc')) th.click();
+    }
+  }
+})();
+
+// Filters fold away on a narrow screen, unless the view arrived filtered.
+(function () {
+  var box = document.querySelector('.facet-box');
+  if (!box) return;
+  var filtered = location.search.length > 1;
+  if (window.innerWidth < 700 && !filtered) box.open = false;
+})();
 
 // Hide the strip arrows when everything already fits.
 function markScrollableStrips() {
@@ -297,4 +371,102 @@ document.querySelectorAll('[data-trace-filter]').forEach(function (btn) {
     render();
   });
   render();
+})();
+
+// Chart readout: each point carries its round's numbers as data attributes
+// (see chart.rs). Pointer events, so a touch works too.
+(function () {
+  document.querySelectorAll('.chart').forEach(function (chart) {
+    var svg = chart.querySelector('svg');
+    if (!svg || !chart.querySelector('.chart-point')) return;
+    var tip = document.createElement('div');
+    tip.className = 'chart-tip';
+    chart.appendChild(tip);
+
+    function show(point) {
+      var d = point.dataset;
+      var rated = d.excitement !== '';
+      tip.innerHTML = '<b>round ' + d.round + '</b>'
+        + (rated
+          ? 'excitement <b style="display:inline">' + d.excitement + '</b><br>'
+            + 'intensity ' + d.intensity + ' · nausea ' + d.nausea
+          : d.note || 'no rated ride');
+      // The SVG scales, so place from rendered geometry, not the viewBox.
+      var box = point.getBoundingClientRect();
+      var frame = chart.getBoundingClientRect();
+      tip.style.left = (box.left + box.width / 2 - frame.left) + 'px';
+      tip.style.top = (box.top - frame.top) + 'px';
+      tip.dataset.show = '1';
+      point.classList.add('active');
+    }
+    function hide() {
+      tip.dataset.show = '0';
+      chart.querySelectorAll('.chart-point.active').forEach(function (p) {
+        p.classList.remove('active');
+      });
+    }
+
+    chart.querySelectorAll('.chart-point').forEach(function (point) {
+      point.addEventListener('pointerenter', function () { show(point); });
+      point.addEventListener('pointerdown', function () { show(point); });
+      point.addEventListener('focus', function () { show(point); });
+      point.addEventListener('blur', hide);
+    });
+    svg.addEventListener('pointerleave', hide);
+  });
+})();
+
+// Lightbox: the cards are small and the captures are dense pixel art.
+(function () {
+  var box;
+  function open(img) {
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'lightbox';
+      box.innerHTML = '<img alt=""><figcaption></figcaption>';
+      box.addEventListener('click', close);
+      document.body.appendChild(box);
+    }
+    // The card shows a downscaled copy; here the original is worth fetching.
+    box.querySelector('img').src = img.dataset.full || img.currentSrc || img.src;
+    box.querySelector('img').alt = img.alt;
+    box.querySelector('figcaption').textContent = img.alt;
+    box.dataset.open = '1';
+  }
+  function close() { if (box) box.dataset.open = '0'; }
+  document.addEventListener('click', function (e) {
+    var img = e.target.closest('.round img, .gallery img, .vs-card img');
+    // A capture inside a link is a navigation, not a zoom.
+    if (!img || img.closest('a')) return;
+    e.preventDefault();
+    open(img);
+  });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+})();
+
+// Replays: only the headline plays by itself, and only while on screen. A model
+// page can hold six clips; those stay preload="none" until clicked. Never under
+// reduced-motion or Save-Data.
+(function () {
+  var hero = document.querySelector('.hero video.replay');
+  if (!hero || !('IntersectionObserver' in window)) return;
+  var still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var thrifty = navigator.connection && (navigator.connection.saveData
+    || /2g/.test(navigator.connection.effectiveType || ''));
+  if (still || thrifty) return;
+
+  // Muted makes autoplay legal. Looping is the template's call: a clip cut at
+  // the cap would jump forever.
+  hero.muted = true;
+  hero.setAttribute('playsinline', '');
+  new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (entry.isIntersecting && entry.intersectionRatio > 0.55) {
+        // A rejected promise just leaves the poster up.
+        hero.play().catch(function () {});
+      } else if (!hero.paused) {
+        hero.pause();
+      }
+    });
+  }, { threshold: [0, 0.55] }).observe(hero);
 })();

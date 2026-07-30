@@ -1,0 +1,10 @@
+{
+  "standings": [
+    {
+      "best_excitement": 7.019999980926514,
+      "best_round": 1,
+      "harness": "claude-code",
+      "model": "claude-opus-5"
+    }
+  ]
+}

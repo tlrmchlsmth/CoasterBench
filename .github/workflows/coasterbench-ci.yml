@@ -22,7 +22,7 @@ jobs:
       matrix:
         crate: [orct2-agent, coaster-bench, coaster-site]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -36,6 +36,31 @@ jobs:
       - name: Test
         run: cargo test --manifest-path rust/${{ matrix.crate }}/Cargo.toml
 
+  deps:
+    name: Dependency audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          # pinned: --config moved to the top level in 0.20
+          tool: cargo-deny@0.20.2,cargo-audit
+      # orct2-agent links into a GPL binary, so an incompatible licence there
+      # makes the release undistributable.
+      - name: Licences
+        run: |
+          for crate in orct2-agent coaster-bench coaster-site; do
+            cargo deny --manifest-path rust/$crate/Cargo.toml --config rust/deny.toml check licenses bans
+          done
+      # a new advisory shouldn't break an unrelated PR
+      - name: Advisories
+        continue-on-error: true
+        run: |
+          for crate in orct2-agent coaster-bench coaster-site; do
+            cargo audit --file rust/$crate/Cargo.lock
+          done
+
   game:
     name: Game + CLI (Linux)
     runs-on: ubuntu-24.04
@@ -43,14 +68,27 @@ jobs:
     # which the agent staticlib needs (Corrosion builds it during cmake).
     container: ghcr.io/openrct2/openrct2-build:26-noble
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cbindgen@0.29.4
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust/orct2-agent
-      - uses: hendrikmuhs/ccache-action@v1.2.21
+      - uses: hendrikmuhs/ccache-action@v1.2.23
         with:
           key: linux-x86_64-coasterbench
+      - name: Generated Rust header is current
+        run: |
+          committed_header="$RUNNER_TEMP/orct2_agent.h"
+          cp src/openrct2/rustbridge/orct2_agent.h "$committed_header"
+          ./scripts/generate-rust-header.sh
+          if ! cmp --silent "$committed_header" src/openrct2/rustbridge/orct2_agent.h; then
+            diff --unified "$committed_header" src/openrct2/rustbridge/orct2_agent.h || true
+            echo "Generated Rust header is stale; run ./scripts/generate-rust-header.sh"
+            exit 1
+          fi
       - name: Build
         run: |
           cmake -S . -B build -G Ninja \
@@ -66,7 +104,7 @@ jobs:
     name: Site generator
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

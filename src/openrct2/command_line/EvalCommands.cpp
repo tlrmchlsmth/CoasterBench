@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Fork-only file (wseaton/OpenRCT2): `openrct2-cli eval` command.
+ * Fork-only file (wseaton/OpenRCT2): `coasterbench-cli eval` command.
  *
  * Loads a park headless, runs the game loop for a fixed number of ticks with
  * the Rust agent bridge hooked in, then asks the agent for its summary.
@@ -35,9 +35,13 @@ namespace OpenRCT2
     static u8string _reportPath{};
     static u8string _capturePath{};
     static int32_t _servePort = 0;
+    static int32_t _serveControlPort = 0;
     static u8string _serveBind{};
     static u8string _dumpLibraryPath{};
     static u8string _renderLibraryDir{};
+    static u8string _saveParkPath{};
+    static u8string _replayPath{};
+    static int32_t _replaySeconds = 90;
     static bool _captureAllRotations = false;
     static bool _captureXray = false;
     static bool _noGraphics = false;
@@ -59,8 +63,12 @@ namespace OpenRCT2
         { CMDLINE_TYPE_STRING,  &_capturePath,          kNAC, "capture",            "write a giant park screenshot (PNG) to this path"       },
         { CMDLINE_TYPE_INTEGER, &_servePort,            kNAC, "serve",              "run the MCP server on this port instead of a batch eval" },
         { CMDLINE_TYPE_STRING,  &_serveBind,            kNAC, "serve-bind",         "MCP server bind address (default 127.0.0.1; use 0.0.0.0 for containers)" },
+        { CMDLINE_TYPE_INTEGER, &_serveControlPort,     kNAC, "serve-control",      "loopback-only control port for the harness (save_park); off when 0"      },
         { CMDLINE_TYPE_STRING,  &_dumpLibraryPath,      kNAC, "dump-library",       "write the stock track design library as JSON to this path and exit"      },
         { CMDLINE_TYPE_STRING,  &_renderLibraryDir,     kNAC, "render-library",     "render a preview PNG of every stock track design into this directory and exit" },
+        { CMDLINE_TYPE_STRING,  &_saveParkPath,         kNAC, "save-park",          "write the finished park as a .park save to this path"   },
+        { CMDLINE_TYPE_STRING,  &_replayPath,           kNAC, "replay",             "film the ride into this .mp4 (needs ffmpeg on PATH)"     },
+        { CMDLINE_TYPE_INTEGER, &_replaySeconds,        kNAC, "replay-seconds",     "cap on --replay length; a clip normally ends at the ride's next departure (default 90)" },
         { CMDLINE_TYPE_SWITCH,  &_captureAllRotations,  kNAC, "capture-all-rotations", "with --capture, also write the other three view rotations as <name>-r1/-r2/-r3.png" },
         { CMDLINE_TYPE_SWITCH,  &_captureXray,          kNAC, "capture-xray",       "with --capture, also write a see-through verification view (terrain and supports hidden, every placed piece visible) as <name>-x.png" },
         { CMDLINE_TYPE_SWITCH,  &_noGraphics,           kNAC, "no-graphics",        "skip loading sprite data: no RCT2 assets required, but screenshots and library previews are unavailable" },
@@ -170,8 +178,12 @@ namespace OpenRCT2
         {
             // Interactive mode: the MCP server owns the game loop from here.
             // Blocks until the process is terminated.
-            RustBridge::Serve(_serveBind.empty() ? nullptr : _serveBind.c_str(), static_cast<uint16_t>(_servePort));
-            return ExitCode::ok;
+            return RustBridge::Serve(
+                       _serveBind.empty() ? nullptr : _serveBind.c_str(), static_cast<uint16_t>(_servePort),
+                       static_cast<uint16_t>(_serveControlPort))
+                    == 0
+                ? ExitCode::ok
+                : ExitCode::fail;
         }
 
         Orct2ProgramOutcome* outcome = nullptr;
@@ -207,6 +219,21 @@ namespace OpenRCT2
                 exitCode = ExitCode::fail;
             }
         }
+        // A screenshot shows the coaster; the save *is* the coaster. It is the
+        // only artifact that lets a result be reopened later and checked
+        // against a claim, rather than believed.
+        if (!_saveParkPath.empty())
+        {
+            if (RustBridge::SavePark(_saveParkPath))
+            {
+                Console::WriteLine("Park saved to %s", _saveParkPath.c_str());
+            }
+            else
+            {
+                Console::Error::WriteLine("Park save failed.");
+                exitCode = ExitCode::fail;
+            }
+        }
         if (!_capturePath.empty())
         {
             if (RustBridge::Capture(_capturePath.c_str(), 0 /*zoom*/, 0 /*rotation*/, true /*fitTrack*/, false) != 0)
@@ -237,6 +264,25 @@ namespace OpenRCT2
                     Console::Error::WriteLine("Screenshot capture failed (xray view).");
                     exitCode = ExitCode::fail;
                 }
+            }
+        }
+        // Last: filming ticks the simulation on.
+        if (!_replayPath.empty())
+        {
+            if (_replaySeconds <= 0)
+            {
+                Console::Error::WriteLine("--replay-seconds must be positive");
+                return ExitCode::fail;
+            }
+            if (RustBridge::CaptureReplay(_replayPath.c_str(), static_cast<uint32_t>(_replaySeconds), 0 /*zoom*/)
+                != 0)
+            {
+                Console::Error::WriteLine("Replay capture failed.");
+                exitCode = ExitCode::fail;
+            }
+            else
+            {
+                Console::WriteLine("Replay written to %s", _replayPath.c_str());
             }
         }
 

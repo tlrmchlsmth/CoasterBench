@@ -1,0 +1,25 @@
+{
+  "agent_state": "fresh-sandbox",
+  "allowed_tools": "mcp__coaster__*,Read,Grep,Glob,Bash",
+  "capabilities": ["track_library", "engine_source", "file_tools", "python3", "shell"],
+  "condition": "library + open-note",
+  "harness": "claude-code",
+  "harnesses": {
+    "claude-opus-5": "claude-code"
+  },
+  "modalities": {
+    "claude-opus-5": "text,image"
+  },
+  "mode": "library",
+  "models": [
+    "claude-opus-5"
+  ],
+  "open_note": true,
+  "open_note_source": "8ed1ac4c57cd4ab4f5808010565337635c142c87",
+  "orchestrator": "coaster-bench",
+  "ride_type": 51,
+  "rounds": 6,
+  "sandbox": "coaster-sub-642bea",
+  "similarity_grace": 0.5,
+  "ticks": 25000
+}

@@ -47,6 +47,7 @@ pub fn parse(harness: Harness, raw: &str) -> Trace {
     match harness {
         Harness::Opencode => parse_opencode(raw),
         Harness::ClaudeCode => parse_claude(raw),
+        Harness::Codex => parse_codex(raw),
     }
 }
 
@@ -297,6 +298,148 @@ fn parse_claude(raw: &str) -> Trace {
     Trace { events, usage }
 }
 
+fn parse_codex(raw: &str) -> Trace {
+    let mut events = Vec::new();
+    let (mut input, mut output, mut cached) = (0i64, 0i64, 0i64);
+    let mut turns = 0i64;
+
+    for event in lines_as_json(raw) {
+        let kind = event.get("type").and_then(Value::as_str).unwrap_or("");
+        match kind {
+            "item.completed" | "item.updated" => {
+                let item = event.get("item").cloned().unwrap_or(Value::Null);
+                let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
+                if kind == "item.updated" && item_type != "error" {
+                    continue;
+                }
+                match item_type {
+                    "agent_message" | "assistant_message" => {
+                        push_text(
+                            &mut events,
+                            "text",
+                            first_str(&item, &["/text", "/message"]),
+                        );
+                    }
+                    "reasoning" => {
+                        push_text(
+                            &mut events,
+                            "thinking",
+                            first_str(&item, &["/text", "/summary", "/content"]),
+                        );
+                    }
+                    "error" => {
+                        push_text(
+                            &mut events,
+                            "error",
+                            first_str(&item, &["/message", "/text"]),
+                        );
+                    }
+                    "mcp_tool_call" | "command_execution" | "file_change" | "web_search" => {
+                        let mut e = Map::new();
+                        e.insert("kind".into(), json!("tool"));
+                        let name = match item_type {
+                            "mcp_tool_call" => first_str(&item, &["/tool", "/tool_name", "/name"]),
+                            "command_execution" => "shell".to_string(),
+                            other => other.to_string(),
+                        };
+                        e.insert("name".into(), json!(strip_server_prefix(&name)));
+                        e.insert(
+                            "input".into(),
+                            first_value(&item, &["/arguments", "/input", "/command"]),
+                        );
+                        let output = first_value(
+                            &item,
+                            &["/result", "/output", "/aggregated_output", "/error"],
+                        );
+                        e.insert(
+                            "output".into(),
+                            match output.get("content") {
+                                Some(content) => json!(flatten_content(Some(content))),
+                                None => match output.get("message") {
+                                    Some(message) => message.clone(),
+                                    None => output,
+                                },
+                            },
+                        );
+                        e.insert(
+                            "status".into(),
+                            item.get("status").cloned().unwrap_or(json!("completed")),
+                        );
+                        push_event(&mut events, e);
+                    }
+                    _ => {}
+                }
+            }
+            "turn.completed" => {
+                turns += 1;
+                let usage = event.get("usage").cloned().unwrap_or(Value::Null);
+                input += usage
+                    .get("input_tokens")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                output += usage
+                    .get("output_tokens")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                cached += usage
+                    .get("cached_input_tokens")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let mut e = Map::new();
+                e.insert("kind".into(), json!("step"));
+                e.insert("tokens".into(), usage);
+                push_event(&mut events, e);
+            }
+            "turn.failed" | "error" => {
+                let message = first_str(&event, &["/error/message", "/message"]);
+                push_text(&mut events, "error", message);
+            }
+            _ => {}
+        }
+    }
+
+    Trace {
+        usage: json!({
+            "input_tokens": input,
+            "output_tokens": output,
+            "cache_read_tokens": cached,
+            "cost_usd": 0.0,
+            "num_turns": turns,
+        }),
+        events,
+    }
+}
+
+fn first_str(value: &Value, paths: &[&str]) -> String {
+    paths
+        .iter()
+        .filter_map(|p| value.pointer(p))
+        .find_map(|v| match v {
+            Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+fn first_value(value: &Value, paths: &[&str]) -> Value {
+    paths
+        .iter()
+        .filter_map(|p| value.pointer(p))
+        .find(|v| !v.is_null())
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+fn push_text(events: &mut Vec<Value>, kind: &str, text: String) {
+    if text.is_empty() {
+        return;
+    }
+    let mut e = Map::new();
+    e.insert("kind".into(), json!(kind));
+    e.insert("text".into(), json!(text));
+    push_event(events, e);
+}
+
 /// Tool results arrive either as a string or as a list of content blocks;
 /// images are noted rather than inlined, since a trace should stay readable.
 fn flatten_content(content: Option<&Value>) -> String {
@@ -323,6 +466,8 @@ fn flatten_content(content: Option<&Value>) -> String {
 /// "mcp__coaster__place_piece"); the trace shows the bare tool name.
 fn strip_server_prefix(name: &str) -> &str {
     name.strip_prefix("mcp__coaster__")
+        .or_else(|| name.strip_prefix("coaster__"))
+        .or_else(|| name.strip_prefix("coaster."))
         .or_else(|| name.strip_prefix("coaster_"))
         .unwrap_or(name)
 }
@@ -346,6 +491,89 @@ mod tests {
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_2","is_error":true,"content":"piece rejected"}]}}
 {"type":"result","num_turns":4,"total_cost_usd":0.42,"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":30}}
 "#;
+
+    const CODEX: &str = r#"
+{"type":"thread.started","thread_id":"019f9a75-92fe-7110-86c9-50f1dc603cea"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"Station first, then the lift."}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Placing the station."}}
+{"type":"item.completed","item":{"id":"item_2","type":"mcp_tool_call","tool":"coaster__place_pieces","status":"completed","arguments":{"pieces":["begin_station"]},"result":"{\"pieces_placed\":1}"}}
+{"type":"item.completed","item":{"id":"item_3","type":"command_execution","command":"python3 -c 'print(1)'","status":"completed","aggregated_output":"1\n"}}
+{"type":"turn.completed","usage":{"input_tokens":1200,"cached_input_tokens":900,"output_tokens":340}}
+"#;
+
+    const CODEX_QUOTA_FAILURE: &str = r#"
+{"type":"thread.started","thread_id":"019f9a76-7873-7282-aba6-f0438ce79b49"}
+{"type":"turn.started"}
+{"type":"error","message":"You've hit your usage limit."}
+{"type":"turn.failed","error":{"message":"You've hit your usage limit."}}
+"#;
+
+    #[test]
+    fn codex_items_become_tools_text_and_totals() {
+        let trace = parse(Harness::Codex, CODEX);
+        assert_eq!(trace.tool_calls(), 2, "mcp call and shell command");
+
+        let mcp = trace
+            .events
+            .iter()
+            .find(|e| e["name"] == "place_pieces")
+            .expect("mcp tool call, server prefix stripped");
+        assert_eq!(mcp["input"]["pieces"][0], "begin_station");
+        assert_eq!(mcp["output"], "{\"pieces_placed\":1}");
+        assert_eq!(mcp["status"], "completed");
+
+        let shell = trace
+            .events
+            .iter()
+            .find(|e| e["name"] == "shell")
+            .expect("open note lets codex run a shell");
+        assert_eq!(shell["input"], "python3 -c 'print(1)'");
+        assert_eq!(shell["output"], "1\n");
+
+        assert!(trace.events.iter().any(|e| e["kind"] == "thinking"));
+        assert!(trace.events.iter().any(|e| e["kind"] == "text"));
+        assert_eq!(trace.usage["input_tokens"], 1200);
+        assert_eq!(trace.usage["output_tokens"], 340);
+        assert_eq!(trace.usage["cache_read_tokens"], 900);
+        assert_eq!(trace.usage["num_turns"], 1);
+    }
+
+    #[test]
+    fn codex_records_why_a_round_produced_nothing() {
+        let trace = parse(Harness::Codex, CODEX_QUOTA_FAILURE);
+        let errors: Vec<&str> = trace
+            .events
+            .iter()
+            .filter(|e| e["kind"] == "error")
+            .filter_map(|e| e["text"].as_str())
+            .collect();
+        assert_eq!(
+            errors.len(),
+            2,
+            "both the error and the failed turn are kept: {errors:?}"
+        );
+        assert!(errors[0].contains("usage limit"));
+        assert_eq!(trace.usage["num_turns"], 0, "no turn ever completed");
+    }
+
+    #[test]
+    fn codex_tolerates_renamed_item_fields() {
+        let renamed = r#"
+{"type":"item.completed","item":{"type":"assistant_message","message":"done"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool_name":"coaster.get_state","input":{"a":1},"output":"ok"}}
+"#;
+        let trace = parse(Harness::Codex, renamed);
+        assert_eq!(trace.tool_calls(), 1);
+        let tool = trace.events.iter().find(|e| e["kind"] == "tool").unwrap();
+        assert_eq!(tool["name"], "get_state");
+        assert_eq!(tool["output"], "ok");
+        assert_eq!(
+            tool["status"], "completed",
+            "an item that reports no status still completed"
+        );
+        assert!(trace.events.iter().any(|e| e["text"] == "done"));
+    }
 
     #[test]
     fn opencode_events_normalise_with_totals() {
@@ -441,6 +669,44 @@ mod tests {
             "reasoning blocks are kept"
         );
         assert!(trace.usage["cost_usd"].as_f64().unwrap() > 0.0);
+    }
+
+    #[test]
+    fn real_codex_session_parses() {
+        let raw = include_str!("../tests/fixtures/codex-session.jsonl");
+        let trace = parse(Harness::Codex, raw);
+
+        assert_eq!(trace.tool_calls(), 3, "two mcp calls and one shell command");
+
+        let listed = trace
+            .events
+            .iter()
+            .find(|e| e["name"] == "list_mcp_resources")
+            .expect("completed mcp call");
+        assert_eq!(
+            listed["output"], "{\"resources\":[]}",
+            "content blocks flattened to text"
+        );
+
+        let failed = trace
+            .events
+            .iter()
+            .find(|e| e["status"] == "failed")
+            .expect("failed mcp call");
+        assert!(
+            failed["output"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("method not found"),
+            "the error message is what explains the failure: {failed}"
+        );
+
+        assert!(trace.events.iter().any(|e| e["kind"] == "thinking"));
+        assert!(trace.events.iter().any(|e| e["kind"] == "text"));
+        assert_eq!(trace.usage["input_tokens"], 134_224);
+        assert_eq!(trace.usage["cache_read_tokens"], 117_760);
+        assert_eq!(trace.usage["output_tokens"], 3836);
+        assert_eq!(trace.usage["num_turns"], 1);
     }
 
     #[test]

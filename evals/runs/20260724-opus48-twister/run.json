@@ -6,7 +6,9 @@
   "modalities": {
     "claude-opus-4-8": "text,image"
   },
-  "mode": "design",
+  "capabilities": ["track_library"],
+  "condition": "library",
+  "mode": "library",
   "models": [
     "claude-opus-4-8"
   ],

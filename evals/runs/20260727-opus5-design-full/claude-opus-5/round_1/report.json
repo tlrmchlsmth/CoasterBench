@@ -1,0 +1,235 @@
+{
+  "bounds": {
+    "max_tile_x": 78,
+    "max_tile_y": 36,
+    "max_z": 440,
+    "min_tile_x": 28,
+    "min_tile_y": 29,
+    "min_z": 112
+  },
+  "placed_pieces": [
+    "begin_station",
+    "middle_station",
+    "middle_station",
+    "end_station",
+    {
+      "chain": true,
+      "t": "flat_to_up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25"
+    },
+    {
+      "chain": true,
+      "t": "up_25_to_flat"
+    },
+    "flat_to_down_25",
+    "down_25_to_down_60",
+    "down_60",
+    "down_60",
+    "down_60_to_down_25",
+    "down_25",
+    "down_25",
+    "down_25",
+    "down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "right_vertical_loop",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "left_turn_5_up_25",
+    "left_turn_5_up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25_to_down_60",
+    "down_60",
+    "down_60_to_down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "left_vertical_loop",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25",
+    "up_25",
+    "up_25_to_flat",
+    "right_corkscrew_up",
+    "left_corkscrew_down",
+    "flat_to_down_25",
+    "down_25",
+    "down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25_to_flat",
+    "left_corkscrew_up",
+    "right_corkscrew_down",
+    "flat_to_down_25",
+    "down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25_to_flat",
+    "flat_to_up_25",
+    "up_25_to_flat",
+    "flat_to_down_25",
+    "down_25_to_flat",
+    {
+      "speed": 12,
+      "t": "brakes"
+    },
+    {
+      "speed": 12,
+      "t": "brakes"
+    },
+    "flat_to_left_bank",
+    "banked_left_turn_3",
+    "banked_left_turn_3",
+    "left_bank_to_flat",
+    "flat_to_down_25",
+    "down_25_to_flat",
+    {
+      "speed": 12,
+      "t": "brakes"
+    },
+    {
+      "speed": 12,
+      "t": "brakes"
+    },
+    {
+      "speed": 12,
+      "t": "brakes"
+    },
+    {
+      "speed": 12,
+      "t": "brakes"
+    }
+  ],
+  "presentation": {
+    "name": "Serpent's Reckoning",
+    "rail_color": "bright_yellow",
+    "support_color": "icy_blue",
+    "track_color": "bright_purple"
+  },
+  "program": null,
+  "rides": [
+    {
+      "average_speed": 512282,
+      "circuit": {
+        "looped": true,
+        "orphan_pieces": 0,
+        "total_pieces": 92,
+        "walked_pieces": 92
+      },
+      "crashed": false,
+      "excitement": 6.559999942779541,
+      "highest_drop": 34,
+      "id": 0,
+      "intensity": 9.979999542236328,
+      "max_lateral_g": 2.8299999237060547,
+      "max_negative_g": -1.2000000476837158,
+      "max_positive_g": 4.960000038146973,
+      "max_speed": 1554982,
+      "nausea": 5.829999923706055,
+      "num_drops": 10,
+      "num_inversions": 4,
+      "ride_length": 598,
+      "ride_time": 59,
+      "ride_type": 51,
+      "status": "testing",
+      "tested": true,
+      "total_air_time": 80
+    }
+  ],
+  "score": 6.559999942779541,
+  "similarity": {
+    "common_substring_share": 0.11956521739130437,
+    "edit_similarity": 0.41666666666666663,
+    "mirrored": false,
+    "nearest_design": "Woodchip",
+    "nearest_ride_type": 52,
+    "similarity": 0.41666666666666663
+  },
+  "start": {
+    "bank": 0,
+    "dir": 2,
+    "slope": 0,
+    "x": 37,
+    "y": 30,
+    "z": 112
+  }
+}

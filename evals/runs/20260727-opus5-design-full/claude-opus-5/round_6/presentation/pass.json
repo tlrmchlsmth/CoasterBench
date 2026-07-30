@@ -1,0 +1,21 @@
+{
+  "agent_version": "2.1.218",
+  "completed_at": "2026-07-27T17:11:34.000Z",
+  "harness": "claude-code",
+  "kind": "posthoc-presentation",
+  "model": "claude-opus-5",
+  "presentation": {
+    "name": "Blackwyrm's Seven Coils",
+    "rail_color": "bright_green",
+    "support_color": "dark_green",
+    "track_color": "black"
+  },
+  "reasoning_effort": null,
+  "score_after": 7.230000019073486,
+  "score_before": 7.230000019073486,
+  "session_error": null,
+  "source_park_sha256": "eb1b131e5fd7d800c52e2abf0018542f2e75d3ef9d8868eee2b713e25839821a",
+  "source_report_sha256": "e90ff1caec8bb120484ee710ca83356f5882d355ece1bc3581d6f4d174616f38",
+  "styled_park_sha256": "5aa8c88a23a3c3fc369989ee0be69b1f17d48b8e281f4463e9f892cfe31ccdd5",
+  "styled_report_sha256": "ed3fa62c265817a93cc0a0b8c3f708acac27792f9d03f89f2a133005f051df48"
+}

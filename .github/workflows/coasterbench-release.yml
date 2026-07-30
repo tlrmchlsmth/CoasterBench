@@ -1,0 +1,117 @@
+name: CoasterBench Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-24.04
+    outputs:
+      harness: ${{ steps.v.outputs.harness }}
+      upstream: ${{ steps.v.outputs.upstream }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: v
+        run: |
+          harness=$(grep -o '"[^"]*"' src/openrct2/rustbridge/HarnessVersion.h | tr -d '"')
+          upstream=$(grep kOpenRCT2Version src/openrct2/Version.h | grep -o '"[^"]*"' | tr -d '"')
+          tag="v$harness+openrct2-$upstream"
+          echo "harness=$harness" >> "$GITHUB_OUTPUT"
+          echo "upstream=$upstream" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          # a pushed tag must agree with the tree it claims to build
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "$tag" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match the tree's $tag" >&2
+            exit 1
+          fi
+
+  build:
+    name: ${{ matrix.name }}
+    needs: version
+    runs-on: ${{ matrix.runs-on }}
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            runs-on: ubuntu-24.04
+            container: ghcr.io/openrct2/openrct2-build:26-noble
+          - name: macos-arm64
+            runs-on: macos-15   # 14 ships Xcode 15.4, too old for the tree
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Packaging tools
+        if: matrix.name == 'linux-x86_64'
+        run: apt-get update && apt-get install -y patchelf unzip curl python3
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DENABLE_RUST_AGENT=ON \
+            -DWITH_TESTS=OFF \
+            -DDISABLE_DISCORD_RPC=ON
+          # `graphics` makes the .dat sprites; only the GUI target pulls it in
+          cmake --build build --target openrct2-cli graphics
+      - name: Package
+        run: ./scripts/package-release.sh build dist
+      - name: Verify the tarball runs unpacked
+        run: |
+          mkdir -p verify && tar xzf dist/*.tar.gz -C verify
+          "$(find verify -name coasterbench-cli -type f)" --version
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*.tar.gz
+
+  release:
+    name: Publish
+    needs: [version, build]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HARNESS: ${{ needs.version.outputs.harness }}
+          UPSTREAM: ${{ needs.version.outputs.upstream }}
+        run: |
+          cat > notes.md <<EOF
+          CoasterBench $HARNESS, built on OpenRCT2 $UPSTREAM.
+
+          A modified OpenRCT2 command line tool. Not an official OpenRCT2
+          release: report issues here, not to the OpenRCT2 project.
+
+          Each archive contains \`coasterbench-cli\`, the OpenRCT2 runtime data
+          it needs, and its non-system libraries. It contains no RollerCoaster
+          Tycoon 2 data. You need a legitimate copy of the original game; see
+          [docs/running-the-eval.md](docs/running-the-eval.md).
+
+          \`\`\`
+          tar xzf coasterbench-cli-*.tar.gz
+          cd coasterbench-cli-*/
+          ./coasterbench-cli eval "\$HOME/rct2-assets/Scenarios/Build your own Six Flags Park.SC6" \\
+            --rct2-data-path "\$HOME/rct2-assets" --serve 8791
+          \`\`\`
+
+          Licensed under GPL-3.0-or-later. Corresponding source is this tag.
+          EOF
+          gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz \
+            --title "CoasterBench $HARNESS (OpenRCT2 $UPSTREAM)" \
+            --notes-file notes.md

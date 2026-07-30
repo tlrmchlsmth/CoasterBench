@@ -1,0 +1,40 @@
+# openshell sandbox create --name <name> --from localhost/coaster-or \
+#     --policy rust/coaster-bench/sandbox/opencode-policy.yaml --provider openrouter -- sleep infinity
+#
+# The openrouter provider injects its own block (openrouter.ai, models.dev).
+version: 1
+
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /usr
+    - /lib
+    - /proc
+    - /dev/urandom
+    - /etc
+    - /var/log
+  read_write:
+    - /sandbox
+    - /tmp
+    - /dev/null
+    - /home/sandbox
+
+landlock:
+  compatibility: best_effort
+
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox
+
+network_policies:
+  coaster_game:
+    name: coaster-game-mcp
+    endpoints:
+      - host: host.containers.internal
+        port: 8791
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+    binaries:
+      - path: /usr/local/bin/node
+      - path: /usr/local/lib/node_modules/opencode-ai/bin/opencode.exe

@@ -6,7 +6,9 @@
   "modalities": {
     "openrouter_moonshotai_kimi-k3": "text,image"
   },
-  "mode": "design",
+  "capabilities": ["track_library"],
+  "condition": "library",
+  "mode": "library",
   "models": [
     "openrouter_moonshotai_kimi-k3"
   ],

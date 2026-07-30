@@ -9,14 +9,14 @@
 use serde::{Deserialize, Serialize};
 
 use crate::host;
-use crate::pieces;
+use crate::pieces::{self, PieceSpec};
 
 #[derive(Debug, Deserialize)]
 pub struct TrackProgram {
     /// Game ride type, e.g. 52 = wooden roller coaster.
     pub ride_type: u16,
     pub start: Start,
-    pub pieces: Vec<Piece>,
+    pub pieces: Vec<PieceSpec>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -26,44 +26,6 @@ pub struct Start {
     pub y: i32,
     /// 0-3; 0 faces -x, 1 faces +y, 2 faces +x, 3 faces -y.
     pub dir: u8,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum PieceRef {
-    Name(String),
-    Raw(u16),
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum Piece {
-    /// Bare piece: "flat" or 0
-    Simple(PieceRef),
-    /// Piece with options: {"t": "up_25", "chain": true}
-    Full {
-        t: PieceRef,
-        #[serde(default)]
-        chain: bool,
-    },
-}
-
-impl Piece {
-    fn parts(&self) -> (&PieceRef, bool) {
-        match self {
-            Piece::Simple(r) => (r, false),
-            Piece::Full { t, chain } => (t, *chain),
-        }
-    }
-}
-
-fn resolve(piece: &PieceRef) -> Result<u16, String> {
-    match piece {
-        PieceRef::Raw(id) => Ok(*id),
-        PieceRef::Name(name) => {
-            pieces::lookup(name).ok_or_else(|| format!("unknown piece name: {name}"))
-        }
-    }
 }
 
 fn describe(track_type: u16) -> String {
@@ -228,8 +190,8 @@ pub fn run(json: &str) -> ProgramOutcome {
     });
 
     for (index, piece) in program.pieces.iter().enumerate() {
-        let (piece_ref, chain) = piece.parts();
-        let track_type = match resolve(piece_ref) {
+        let (_, chain, speed) = piece.parts();
+        let track_type = match piece.track_type() {
             Ok(t) => t,
             Err(message) => {
                 outcome.error = Some(ProgramError {
@@ -241,7 +203,18 @@ pub fn run(json: &str) -> ProgramOutcome {
             }
         };
         let piece_tile = (cursor.x / 32, cursor.y / 32);
-        match host::track_place(ride_id, track_type, chain, &mut cursor) {
+        let speed = match pieces::resolve_speed(track_type, speed) {
+            Ok(speed) => speed,
+            Err(message) => {
+                outcome.error = Some(ProgramError {
+                    piece_index: Some(index),
+                    piece: None,
+                    message,
+                });
+                return outcome;
+            }
+        };
+        match host::track_place(ride_id, track_type, chain, speed, &mut cursor) {
             Ok(cost) => {
                 outcome.pieces_placed += 1;
                 outcome.total_cost += cost;
@@ -335,23 +308,29 @@ mod tests {
         let json = r#"{
             "ride_type": 52,
             "start": {"x": 10, "y": 12, "dir": 1},
-            "pieces": ["begin_station", 3, {"t": "up_25", "chain": true}, {"t": 42}]
+            "pieces": ["begin_station", 3, {"t": "up_25", "chain": true}, {"t": 42},
+                       {"piece": "booster", "speed": 25}]
         }"#;
         let p: TrackProgram = serde_json::from_str(json).expect("parse");
         assert_eq!(p.ride_type, 52);
         assert_eq!(p.start.dir, 1);
-        assert_eq!(p.pieces.len(), 4);
-        let (r0, chain0) = p.pieces[0].parts();
-        assert_eq!(resolve(r0).expect("resolve"), 2);
-        assert!(!chain0);
-        let (r2, chain2) = p.pieces[2].parts();
-        assert_eq!(resolve(r2).expect("resolve"), 4);
-        assert!(chain2);
+        assert_eq!(p.pieces.len(), 5);
+        assert_eq!(p.pieces[0].track_type().expect("resolve"), 2);
+        assert!(!p.pieces[0].parts().1);
+        assert_eq!(p.pieces[2].track_type().expect("resolve"), 4);
+        assert!(p.pieces[2].parts().1);
+        // A program accepts place_pieces' spelling too, so a batch copied out
+        // of a session's trace replays without translation.
+        assert_eq!(p.pieces[4].parts().2, Some(25));
     }
 
     #[test]
     fn unknown_name_resolves_to_error() {
-        assert!(resolve(&PieceRef::Name("loop_de_loop".into())).is_err());
+        let p: TrackProgram = serde_json::from_str(
+            r#"{"ride_type": 52, "start": {"x": 1, "y": 1, "dir": 0}, "pieces": ["loop_de_loop"]}"#,
+        )
+        .expect("parse");
+        assert!(p.pieces[0].track_type().is_err());
     }
 
     #[test]
