@@ -1150,6 +1150,8 @@ def compete_interactive(
             round_usage = {"input_tokens": 0, "output_tokens": 0}
             started = time.time()
             turns = 0
+            banked = False  # a finish_and_test succeeded this round
+            nudges = 0
             stop_reason = "model stopped"
             while True:
                 if turns >= max_turns:
@@ -1171,11 +1173,29 @@ def compete_interactive(
                 messages.append({"role": "assistant", "content": response.content})
                 tool_uses = [b for b in response.content if b.type == "tool_use"]
                 if not tool_uses:
+                    # Stopping with nothing banked wastes the round (observed:
+                    # Laguna quit at 11 turns with an open circuit). Send it
+                    # back to work while budget remains, twice at most.
+                    if not banked and nudges < 2 and turns < max_turns - 2:
+                        nudges += 1
+                        print(f"  [{tag}] r{rnd}: model stopped with no banked score; nudge {nudges}/2", flush=True)
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": "You have NO tested coaster banked yet, so stopping now scores zero. "
+                                "You still have turns left. Check get_state: if the circuit is open, plan the "
+                                "return leg with piece_geometry and close it, then call finish_and_test. "
+                                "Continue building now.",
+                            }
+                        )
+                        continue
                     break
                 turns += 1
                 results = []
                 for tu in tool_uses:
                     text, is_error = game.call(tu.name, tu.input or {})
+                    if tu.name == "finish_and_test" and not is_error and '"tested":true' in text.replace(" ", ""):
+                        banked = True
                     flag = " ERROR" if is_error else ""
                     brief = text.replace("\n", " ")[:110]
                     print(f"  [{tag}] r{rnd} t{turns}: {tu.name}{flag} -> {brief}", flush=True)
