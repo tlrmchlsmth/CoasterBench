@@ -759,6 +759,9 @@ class _Usage:
 class _Response:
     content: list
     usage: _Usage
+    # Anthropic-style: "max_tokens" when the completion was cut off before
+    # finishing (a reasoning model still thinking), else "end_turn"/"tool_use".
+    stop_reason: str = "end_turn"
 
 
 def _to_openai(message: dict) -> list[dict]:
@@ -886,12 +889,15 @@ class OpenAICompat:
                 except json.JSONDecodeError:
                     args = {}
                 content.append(ToolUseBlock(id=call.id, name=call.function.name, input=args))
+            finish = resp.choices[0].finish_reason
+            stop_reason = "max_tokens" if finish == "length" else ("tool_use" if finish == "tool_calls" else "end_turn")
             if any(b.type == "tool_use" for b in content):
-                return _Response(content=content, usage=_Usage(input_tokens, output_tokens))
+                return _Response(content=content, usage=_Usage(input_tokens, output_tokens), stop_reason=stop_reason)
             if oa_choice == "auto":
                 # Interactive lane: a text-only response is the model ending
-                # its round, not a protocol failure.
-                return _Response(content=content, usage=_Usage(input_tokens, output_tokens))
+                # its round, not a protocol failure. The caller reads
+                # stop_reason to tell "done" from "cut off mid-thought".
+                return _Response(content=content, usage=_Usage(input_tokens, output_tokens), stop_reason=stop_reason)
             if resp.choices[0].finish_reason == "length":
                 # Deterministic, so retrying just burns tokens: the model (a
                 # reasoning model, usually) hit the token ceiling while still
@@ -1070,6 +1076,25 @@ def interactive_system_prompt(ride_type: int, scenario: Path, max_turns: int) ->
     )
 
 
+def serialize_transcript(messages: list[dict]) -> list[dict]:
+    """Message history -> plain JSON (assistant content blocks are SDK objects
+    or driver dataclasses). Saved per round so a dead round can be read."""
+    import dataclasses
+
+    def block(b):
+        if isinstance(b, dict):
+            return b
+        if hasattr(b, "model_dump"):
+            return b.model_dump()
+        return dataclasses.asdict(b)
+
+    out = []
+    for m in messages:
+        content = m["content"]
+        out.append({"role": m["role"], "content": content if isinstance(content, str) else [block(b) for b in content]})
+    return out
+
+
 def collect_interactive_round(game: McpGame, ticks: int, ride_type: int) -> tuple[dict, dict | None]:
     """Score the round from game state, mirroring coaster-bench's collect_round:
     test whatever is standing (catches a round that never called finish_and_test),
@@ -1173,21 +1198,25 @@ def compete_interactive(
                 messages.append({"role": "assistant", "content": response.content})
                 tool_uses = [b for b in response.content if b.type == "tool_use"]
                 if not tool_uses:
+                    cut_off = getattr(response, "stop_reason", "end_turn") == "max_tokens"
                     # Stopping with nothing banked wastes the round (observed:
-                    # Laguna quit at 11 turns with an open circuit). Send it
-                    # back to work while budget remains, twice at most.
-                    if not banked and nudges < 2 and turns < max_turns - 2:
+                    # Laguna quit at 11 turns with an open circuit; another
+                    # round died to a completion cut off mid-thought). Send it
+                    # back to work while budget remains, a few times at most.
+                    if (cut_off or not banked) and nudges < 3 and turns < max_turns - 2:
                         nudges += 1
-                        print(f"  [{tag}] r{rnd}: model stopped with no banked score; nudge {nudges}/2", flush=True)
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": "You have NO tested coaster banked yet, so stopping now scores zero. "
-                                "You still have turns left. Check get_state: if the circuit is open, plan the "
-                                "return leg with piece_geometry and close it, then call finish_and_test. "
-                                "Continue building now.",
-                            }
+                        why = "cut off mid-response" if cut_off else "stopped with no banked score"
+                        print(f"  [{tag}] r{rnd}: model {why}; nudge {nudges}/3", flush=True)
+                        nudge = (
+                            "Your reply was cut off by the token limit before any tool call. "
+                            "Keep your reasoning brief and make a tool call now."
+                            if cut_off
+                            else "You have NO tested coaster banked yet, so stopping now scores zero. "
+                            "You still have turns left. Check get_state: if the circuit is open, plan the "
+                            "return leg with piece_geometry and close it, then call finish_and_test. "
+                            "Continue building now."
                         )
+                        messages.append({"role": "user", "content": nudge})
                         continue
                     break
                 turns += 1
@@ -1214,6 +1243,10 @@ def compete_interactive(
             report, program = collect_interactive_round(game, ticks, ride_type)
             round_dir = rounds_base / f"round_{rnd}"
             round_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                (round_dir / "transcript.json").write_text(json.dumps(serialize_transcript(messages), indent=1))
+            except Exception as e:  # diagnostics must never sink a round
+                print(f"  [{tag}] round {rnd}: transcript write failed: {e}", flush=True)
             (round_dir / "report.json").write_text(json.dumps(report, indent=1))
             if program:
                 (round_dir / "program.json").write_text(json.dumps(program, indent=1))
