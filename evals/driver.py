@@ -48,6 +48,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -849,7 +850,7 @@ class OpenAICompat:
         oa_choice: str | dict = (
             {"type": "function", "function": {"name": tool_choice["name"]}}
             if tool_choice.get("type") == "tool"
-            else "required"
+            else ("auto" if tool_choice.get("type") == "auto" else "required")
         )
         # tool_choice="required" is not airtight in the wild: vLLM's guided
         # grammar can emit an empty call array, so a callless response gets
@@ -885,6 +886,10 @@ class OpenAICompat:
                 content.append(ToolUseBlock(id=call.id, name=call.function.name, input=args))
             if any(b.type == "tool_use" for b in content):
                 return _Response(content=content, usage=_Usage(input_tokens, output_tokens))
+            if oa_choice == "auto":
+                # Interactive lane: a text-only response is the model ending
+                # its round, not a protocol failure.
+                return _Response(content=content, usage=_Usage(input_tokens, output_tokens))
             if resp.choices[0].finish_reason == "length":
                 # Deterministic, so retrying just burns tokens: the model (a
                 # reasoning model, usually) hit the token ceiling while still
@@ -900,6 +905,306 @@ class OpenAICompat:
                 )
             print(f"  [{model}] no tool call (attempt {attempt + 1}/3), retrying", flush=True)
         raise RuntimeError(f"{model} returned no tool call in 3 attempts despite tool_choice={oa_choice!r}")
+
+
+# ---------------------------------------------------------------------------
+# Interactive per-piece lane: the same MCP server coaster-bench drives, but
+# with the agent loop in this process, so it works against any OpenAI-
+# compatible endpoint (vLLM) with per-turn feedback, mid-round time warnings,
+# and thinking that terminates (short tool turns, unlike the one-shot prompt
+# reasoning models never finish — see evals/ci/README.md finding 3).
+# ---------------------------------------------------------------------------
+
+MCP_PORT_BASE = int(os.environ.get("COASTERBENCH_MCP_PORT", "8791"))
+_mcp_port_lock = threading.Lock()
+_mcp_port_slot = 0
+
+
+def _alloc_mcp_ports() -> tuple[int, int]:
+    """A (serve, control) port pair; unique per game server in this process."""
+    global _mcp_port_slot
+    with _mcp_port_lock:
+        slot = _mcp_port_slot
+        _mcp_port_slot += 1
+    return MCP_PORT_BASE + 2 * slot, MCP_PORT_BASE + 2 * slot + 1
+
+
+class McpGame:
+    """One game server subprocess plus JSON-RPC clients for its MCP endpoint
+    and the harness control plane (plain HTTP, JSON response mode)."""
+
+    def __init__(self, scenario: Path, condition: str = "design"):
+        self.port, self.control_port = _alloc_mcp_ports()
+        self.condition = condition
+        self.lease: str | None = None
+        self._id = 0
+        self.proc = subprocess.Popen(
+            [str(CLI), "eval", str(scenario), *rct2_args(), "--serve", str(self.port), "--serve-control", str(self.control_port)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        deadline = time.time() + 120
+        while True:
+            try:
+                self._rpc(self._url(), "tools/list", {})
+                self._rpc(f"http://127.0.0.1:{self.control_port}/mcp", "tools/list", {})
+                break
+            except Exception:
+                if self.proc.poll() is not None:
+                    raise RuntimeError(f"game server exited with {self.proc.returncode}")
+                if time.time() > deadline:
+                    self.close()
+                    raise RuntimeError("game server never came up")
+                time.sleep(1)
+
+    def _url(self, claim: bool = False) -> str:
+        params = [f"modalities=text", f"condition={self.condition}"]
+        if self.lease:
+            params.append(f"lease={self.lease}")
+        if claim:
+            params.append("claim=1")
+        return f"http://127.0.0.1:{self.port}/mcp?" + "&".join(params)
+
+    def _rpc(self, url: str, method: str, params: dict) -> dict:
+        import urllib.request
+
+        self._id += 1
+        body = json.dumps({"jsonrpc": "2.0", "id": self._id, "method": method, "params": params}).encode()
+        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            reply = json.loads(resp.read())
+        if "error" in reply:
+            raise RuntimeError(f"{method}: {reply['error']}")
+        return reply.get("result") or {}
+
+    def claim(self, lease: str) -> None:
+        """Takes ownership of the park, locking out earlier leases."""
+        self.lease = lease
+        self._rpc(self._url(claim=True), "tools/call", {"name": "get_state", "arguments": {}})
+
+    def agent_tools(self) -> list[dict]:
+        """The server's tool list in the driver's anthropic tool shape."""
+        listed = self._rpc(self._url(), "tools/list", {})
+        return [
+            {"name": t["name"], "description": t.get("description", ""), "input_schema": t.get("inputSchema") or {"type": "object"}}
+            for t in listed.get("tools", [])
+        ]
+
+    def call(self, tool: str, arguments: dict) -> tuple[str, bool]:
+        """One agent tool call; returns (text result, is_error)."""
+        try:
+            result = self._rpc(self._url(), "tools/call", {"name": tool, "arguments": arguments})
+        except Exception as e:  # transport/rpc-level failure, not a game verdict
+            return f"tool call failed: {e}", True
+        texts = [c.get("text", "") for c in result.get("content", []) if c.get("type") == "text"]
+        return "\n".join(texts) or "(no text)", bool(result.get("isError"))
+
+    def game(self, tool: str, arguments: dict) -> dict:
+        """Driver-side (not model-side) call on the agent endpoint."""
+        text, is_error = self.call(tool, arguments)
+        if is_error:
+            raise RuntimeError(f"{tool}: {text}")
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return {"text": text}
+
+    def control(self, tool: str, arguments: dict) -> dict:
+        result = self._rpc(f"http://127.0.0.1:{self.control_port}/mcp", "tools/call", {"name": tool, "arguments": arguments})
+        if result.get("isError"):
+            raise RuntimeError(f"{tool}: {result}")
+        return result
+
+    def close(self) -> None:
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+
+
+INTERACTIVE_PROMPT = f"""You are competing to design the best RollerCoaster Tycoon 2 roller coaster.
+You build interactively through tools that drive the real game engine: place pieces one
+by one (or in batches), read the errors, test the ride, and iterate. The game is the
+ground truth — when unsure what fits at the cursor, ask it (valid_next_pieces,
+piece_geometry) instead of guessing.
+
+## Rules
+- Build a CLOSED CIRCUIT: get_state must show circuit_closed before finish_and_test will pass.
+- Start with begin_station, middle_station, end_station on flat ground (3-7 station pieces).
+- Chain lift ({{"chain": true}}) only works on 25-degree slopes. Trains start slow; climb first, then coast.
+- A booster accelerates the train up to its speed and brakes slow it down to theirs:
+  {{"t": "booster", "speed": 25}}, range 0-30, default 8. A booster is the fix for a layout
+  that runs out of energy and valleys; brakes are for shedding speed before the station.
+- Intensity above ~10 tanks excitement; keep it under 10. Crashes disqualify.
+- {{RIDE_TYPE_LINE}}
+- Your track is compared to the stock design library; similarity above {SIMILARITY_GRACE} scales your
+  score toward zero. Design something original.
+
+## Map
+{{MAP_LINE}}
+
+## How to work
+1. Plan a layout, then new_ride and build with place_pieces in chunks.
+2. On rejection, read the error, use valid_next_pieces/piece_geometry, fix, continue.
+3. Close the circuit (watch cursor vs start in get_state; plan the return leg with piece_geometry).
+4. finish_and_test as soon as you have a closed circuit, so you bank a score early.
+5. Only then experiment: demolish and rebuild to beat it. A worse or unfinished rebuild
+   costs nothing: best_result keeps your highest score, and that is what you are scored on.
+
+## Budget
+You have {{MAX_TURNS}} tool turns this round; the driver will warn you when they run low.
+Bank a tested circuit EARLY. When you are done (or told to wrap up), reply without
+calling any tool: a short summary of your best coaster ends the round."""
+
+
+def interactive_system_prompt(ride_type: int, scenario: Path, max_turns: int) -> str:
+    _, ride_line = ride_type_info(ride_type)
+    return (
+        INTERACTIVE_PROMPT.replace("{RIDE_TYPE_LINE}", ride_line)
+        .replace("{MAP_LINE}", scenario_map_line(scenario))
+        .replace("{MAX_TURNS}", str(max_turns))
+    )
+
+
+def collect_interactive_round(game: McpGame, ticks: int, ride_type: int) -> tuple[dict, dict | None]:
+    """Score the round from game state, mirroring coaster-bench's collect_round:
+    test whatever is standing (catches a round that never called finish_and_test),
+    then prefer the server's best tested result. Returns (report, program|None)."""
+    state = {}
+    try:
+        state = game.game("get_state", {})
+    except RuntimeError:
+        pass
+    placed = state.get("pieces_placed", 0)
+    try:
+        final_report = game.game("finish_and_test", {"ticks": ticks})
+    except RuntimeError as e:
+        final_report = {
+            "program": {"ok": False, "pieces_placed": placed, "pieces_total": placed, "error": {"piece_index": None, "message": str(e)}},
+            "rides": [],
+            "similarity": None,
+        }
+    try:
+        report = game.game("best_result", {})
+    except RuntimeError:
+        report = final_report
+    pieces = report.get("placed_pieces") or state.get("placed_pieces") or []
+    start = report.get("start") or state.get("start") or {}
+    program = None
+    if pieces:
+        program = {
+            "ride_type": ride_type,
+            "start": {"x": start.get("x", 0), "y": start.get("y", 0), "dir": start.get("dir", 0)},
+            "pieces": pieces,
+        }
+    if not report.get("program"):
+        # Interactive reports have no batch program section; synthesize the
+        # verdict Attempt.summary and the site read from it.
+        tested = any(r.get("tested") for r in report.get("rides") or [])
+        report["program"] = {
+            "ok": tested,
+            "pieces_placed": len(pieces),
+            "pieces_total": len(pieces),
+            **({} if tested else {"error": {"piece_index": None, "message": "round ended without a tested circuit"}}),
+        }
+    return report, program
+
+
+def compete_interactive(
+    client,
+    model: str,
+    rounds: int,
+    scenario: Path,
+    run_dir: Path,
+    ticks: int,
+    ride_type: int,
+    condition: str = "design",
+    max_tokens: int = 8000,
+    scenario_label: str | None = None,
+    max_turns: int = 60,
+    session_timeout: int = 1800,
+) -> Contender:
+    contender = Contender(model=model)
+    model_dir = run_dir / model.replace("/", "_")
+    rounds_base = model_dir / scenario_label if scenario_label else model_dir
+    tag = f"{model} @ {scenario_label}" if scenario_label else model
+    ride_name, _ = ride_type_info(ride_type)
+    game = McpGame(scenario, condition)
+    print(f"  [{tag}] game server on port {game.port} (control {game.control_port})", flush=True)
+    try:
+        tools = game.agent_tools()
+        system_prompt = interactive_system_prompt(ride_type, scenario, max_turns)
+        feedback: str | None = None
+        for rnd in range(1, rounds + 1):
+            # Identical pre-round state for every round and contender order.
+            game.control("reset_park", {})
+            game.claim(f"{tag}-r{rnd}-{int(time.time())}".replace(" ", "_").replace("@", "_").replace("/", "_"))
+            opening = f"Round {rnd} of {rounds}. Design and build your best {ride_name} (ride_type {ride_type})."
+            if feedback:
+                opening += f"\n\nYour previous round's eval report (learn from it):\n{feedback}"
+            messages: list[dict] = [{"role": "user", "content": opening}]
+            round_usage = {"input_tokens": 0, "output_tokens": 0}
+            started = time.time()
+            turns = 0
+            stop_reason = "model stopped"
+            while True:
+                if turns >= max_turns:
+                    stop_reason = f"turn budget ({max_turns}) exhausted"
+                    break
+                if time.time() - started > session_timeout:
+                    stop_reason = f"wall clock ({session_timeout}s) exhausted"
+                    break
+                response = client.messages.create(
+                    model=model,
+                    max_tokens=max_tokens,
+                    system=system_prompt,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice={"type": "auto"},
+                )
+                round_usage["input_tokens"] += response.usage.input_tokens
+                round_usage["output_tokens"] += response.usage.output_tokens
+                messages.append({"role": "assistant", "content": response.content})
+                tool_uses = [b for b in response.content if b.type == "tool_use"]
+                if not tool_uses:
+                    break
+                turns += 1
+                results = []
+                for tu in tool_uses:
+                    text, is_error = game.call(tu.name, tu.input or {})
+                    flag = " ERROR" if is_error else ""
+                    brief = text.replace("\n", " ")[:110]
+                    print(f"  [{tag}] r{rnd} t{turns}: {tu.name}{flag} -> {brief}", flush=True)
+                    results.append({"type": "tool_result", "tool_use_id": tu.id, "content": text})
+                remaining = max_turns - turns
+                left = session_timeout - (time.time() - started)
+                if remaining in (5, 10) or (0 < left < 240 and remaining > 5):
+                    results[-1]["content"] += (
+                        f"\n\n[time check: {remaining} tool turns / ~{int(left / 60)} minutes left. "
+                        "If you have no banked score yet, close the circuit and finish_and_test NOW; "
+                        "a tested mediocre coaster beats an untested masterpiece.]"
+                    )
+                messages.append({"role": "user", "content": results})
+            print(f"  [{tag}] round {rnd}: {stop_reason} after {turns} tool turns", flush=True)
+
+            report, program = collect_interactive_round(game, ticks, ride_type)
+            round_dir = rounds_base / f"round_{rnd}"
+            round_dir.mkdir(parents=True, exist_ok=True)
+            (round_dir / "report.json").write_text(json.dumps(report, indent=1))
+            if program:
+                (round_dir / "program.json").write_text(json.dumps(program, indent=1))
+            (round_dir / "usage.json").write_text(
+                json.dumps({"harness": "driver-mcp", "model": model, "num_turns": turns, **round_usage}, indent=2)
+            )
+            attempt = Attempt(round=rnd, program=program or {}, report=report, screenshot=None, lookups=[])
+            contender.attempts.append(attempt)
+            print(f"  [{tag}] round {rnd}: {attempt.summary}", flush=True)
+            feedback = json.dumps(report)
+    finally:
+        game.close()
+    return contender
 
 
 def compete(
@@ -1054,6 +1359,32 @@ def main() -> int:
         help="max concurrent (model, scenario) competitions with --scenarios "
         "(default: min(8, models*scenarios)); each runs its own game subprocess",
     )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="build per-piece through the game's MCP server (the coaster-bench "
+        "condition) instead of one-shot track programs: per-turn feedback, "
+        "mid-round budget warnings, and thinking that can actually terminate. "
+        "Recommended for reasoning models.",
+    )
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=60,
+        help="interactive lane: tool turns per round before the driver ends it",
+    )
+    parser.add_argument(
+        "--session-timeout",
+        type=int,
+        default=1800,
+        help="interactive lane: wall-clock seconds per round before the driver ends it",
+    )
+    parser.add_argument(
+        "--thinking-budget",
+        type=int,
+        help="cap reasoning tokens per request via vLLM's thinking_token_budget "
+        "(needs a --reasoning-parser on the server; OpenAI lane only)",
+    )
     parser.add_argument("--vertex", action="store_true", help="use Google Vertex AI instead of the first-party API")
     parser.add_argument(
         "--base-url",
@@ -1133,7 +1464,9 @@ def main() -> int:
     print(f"run dir: {run_dir} (mode: {args.mode})")
 
     library = None
-    if args.mode == "library":
+    if args.mode == "library" and not args.interactive:
+        # Interactive rounds get the library tools from the MCP server itself
+        # (condition=library in the request target); no driver-side dump needed.
         library_scenario = scenarios[0][1] if scenarios else args.scenario
         library = dump_library(library_scenario, run_dir)
         print(f"track design library: {len(library)} designs")
@@ -1143,7 +1476,7 @@ def main() -> int:
         json.dumps(
             {
                 "mode": args.mode,
-                "harness": "driver-api",
+                "harness": "driver-mcp" if args.interactive else "driver-api",
                 "models": args.models,
                 "rounds": args.rounds,
                 "ticks": args.ticks,
@@ -1164,10 +1497,12 @@ def main() -> int:
     )
 
     if args.base_url:
-        extra_body = (
-            {"chat_template_kwargs": json.loads(args.chat_template_kwargs)} if args.chat_template_kwargs else None
-        )
-        client = OpenAICompat(args.base_url, os.environ.get("OPENAI_API_KEY", "EMPTY"), extra_body)
+        extra_body = {}
+        if args.chat_template_kwargs:
+            extra_body["chat_template_kwargs"] = json.loads(args.chat_template_kwargs)
+        if args.thinking_budget:
+            extra_body["thinking_token_budget"] = args.thinking_budget
+        client = OpenAICompat(args.base_url, os.environ.get("OPENAI_API_KEY", "EMPTY"), extra_body or None)
     elif args.vertex:
         # Auth is GCP application-default credentials, not an Anthropic key.
         kwargs = {"region": args.region}
@@ -1179,10 +1514,28 @@ def main() -> int:
     if scenarios:
         return run_multi_scenario(client, args, scenarios, run_dir, library)
 
-    contenders = [
-        compete(client, model, args.rounds, args.scenario, run_dir, args.ticks, args.ride_type, library, args.max_tokens)
-        for model in args.models
-    ]
+    if args.interactive:
+        contenders = [
+            compete_interactive(
+                client,
+                model,
+                args.rounds,
+                args.scenario,
+                run_dir,
+                args.ticks,
+                args.ride_type,
+                condition=args.mode,
+                max_tokens=args.max_tokens,
+                max_turns=args.max_turns,
+                session_timeout=args.session_timeout,
+            )
+            for model in args.models
+        ]
+    else:
+        contenders = [
+            compete(client, model, args.rounds, args.scenario, run_dir, args.ticks, args.ride_type, library, args.max_tokens)
+            for model in args.models
+        ]
 
     print("\n=== FINAL STANDINGS ===")
     ranked = sorted(contenders, key=lambda c: c.best.excitement if c.best else 0.0, reverse=True)
@@ -1235,6 +1588,21 @@ def run_multi_scenario(
 
     def one(model: str, label: str, park: Path) -> Contender:
         try:
+            if args.interactive:
+                return compete_interactive(
+                    client,
+                    model,
+                    args.rounds,
+                    park,
+                    run_dir,
+                    args.ticks,
+                    args.ride_type,
+                    condition=args.mode,
+                    max_tokens=args.max_tokens,
+                    scenario_label=label,
+                    max_turns=args.max_turns,
+                    session_timeout=args.session_timeout,
+                )
             return compete(
                 client, model, args.rounds, park, run_dir, args.ticks, args.ride_type, library, args.max_tokens, label
             )

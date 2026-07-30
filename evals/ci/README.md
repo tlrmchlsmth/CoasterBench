@@ -49,6 +49,21 @@ There is also a zero-GPU smoke: replay a canned program with no model at all —
 --ticks 25000 --program evals/programs/test_oval.json --out report.json`
 must produce `program.ok == true` and a tested ride.
 
+## Interactive per-piece mode (reasoning models)
+
+`driver.py --interactive` runs the same benchmark condition as the
+coaster-bench MCP lane, with the agent loop in the driver: it spawns the
+game's MCP server, hands the model the real per-piece tools (new_ride,
+place_pieces, valid_next_pieces, finish_and_test, ...), injects budget
+warnings mid-round, and scores the server's `best_result` so an unfinished
+rebuild never zeroes a round. This is the mode for thinking-tier models —
+short tool turns terminate where the one-shot design prompt never did
+(finding 3 below); cap reasoning per turn with `--thinking-budget N`
+(vLLM `thinking_token_budget`, needs a `--reasoning-parser`) instead of
+disabling it. `--max-turns` / `--session-timeout` bound the round;
+`run.json` records `harness: driver-mcp`. Composes with `--no-graphics`
+and `--scenarios N`.
+
 ## Multi-scenario runs
 
 `--scenarios N` runs each model across the first N seeds of

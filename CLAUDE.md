@@ -115,6 +115,12 @@ Non-bundled binaries look for `data/` next to the exe. One-time setup:
   terrain by identifier (zero RCT2 assets), and writes an `out.hints.json`
   sidecar (playable bounds, flattest dry square anchor, water fraction,
   height span in z-units). Implementation: src/openrct2/rustbridge/ParkGen.cpp.
+- Interactive driver lane: `driver.py --interactive` drives the MCP server's
+  per-piece tools from the driver's own agent loop (any OpenAI-compatible
+  endpoint; also the Anthropic lanes), with per-turn feedback, budget
+  warnings, best_result scoring, and `--thinking-budget` (vLLM
+  thinking_token_budget). harness records as `driver-mcp`. This is the lane
+  for reasoning models — one-shot prompts never terminate their thinking.
 - Multi-scenario runs: `driver.py --scenarios N` takes the first N seeds of
   evals/scenarios/seeds.json (committed; parks regenerate on demand into the
   gitignored evals/scenarios/generated/), renders each park's prompt map
