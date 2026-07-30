@@ -829,7 +829,9 @@ class OpenAICompat:
 
         # A thinking model can legitimately generate for well over the SDK's
         # 10-minute default timeout (131k tokens at ~140 tok/s is ~15 min).
-        self._client = openai.OpenAI(base_url=base_url, api_key=api_key, timeout=3600)
+        # Generous connection retries: long interactive runs often ride a
+        # kubectl port-forward, which drops and re-listens under it.
+        self._client = openai.OpenAI(base_url=base_url, api_key=api_key, timeout=3600, max_retries=5)
         # Endpoint-specific request extras, e.g. vLLM's chat_template_kwargs
         # ({"enable_thinking": false} tames reasoning models whose thinking
         # would otherwise exhaust any completion budget on this task).
