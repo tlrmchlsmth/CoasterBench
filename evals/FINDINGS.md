@@ -17,7 +17,13 @@ recoveries, each worth zero-to-something on its own:
 | --- | --- | --- | --- |
 | 1 | plain loop, 16k completion cap | 0/3 | — |
 | 2 | + nudges on unbanked stop / mid-think cutoff | 2/3 | 0.63 |
-| 3 | + 32k cap (cutoffs gone; unparsed-call stalls exposed) | in progress | — |
+| 3 | + 32k cap (rarer cutoffs; unparsed-call stalls exposed) | 2/3 | 2.68 |
+
+Run 3's rounds went failed -> 0.62 -> 2.68 (3 drops, 294 m, 39 turns): the
+round-over-round feedback loop works — Laguna reads the previous report and
+builds a bigger, better coaster. In its 2.68 round it also banked a score
+mid-round on its own and then demolished to attempt a better layout, which
+is exactly the best_result-protected experiment loop the prompt teaches.
 
 The three stall modes, all observed in transcripts:
 

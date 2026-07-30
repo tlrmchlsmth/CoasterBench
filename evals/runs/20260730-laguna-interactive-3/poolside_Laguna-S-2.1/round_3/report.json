@@ -1,0 +1,122 @@
+{
+ "bounds": {
+  "max_tile_x": 254,
+  "max_tile_y": 254,
+  "max_z": 1136,
+  "min_tile_x": 53,
+  "min_tile_y": 51,
+  "min_z": 112
+ },
+ "placed_pieces": [
+  "begin_station",
+  "middle_station",
+  "middle_station",
+  "middle_station",
+  "end_station",
+  {
+   "chain": true,
+   "t": "flat_to_up_25"
+  },
+  {
+   "chain": true,
+   "t": "up_25"
+  },
+  {
+   "chain": true,
+   "t": "up_25"
+  },
+  {
+   "chain": true,
+   "t": "up_25"
+  },
+  "up_25_to_flat",
+  "flat",
+  "flat",
+  "flat_to_down_25",
+  "down_25",
+  "down_25",
+  "down_25",
+  "down_25_to_flat",
+  "right_turn_5",
+  "flat",
+  "flat",
+  "flat",
+  "flat",
+  "right_turn_5",
+  "flat",
+  "flat",
+  "flat_to_up_25",
+  "up_25",
+  "up_25",
+  "up_25_to_flat",
+  "flat_to_down_25",
+  "down_25",
+  "down_25",
+  "down_25_to_flat",
+  "flat",
+  "flat",
+  "flat_to_up_25",
+  "up_25",
+  "up_25",
+  "up_25_to_flat",
+  "flat_to_left_bank",
+  "left_bank",
+  "left_bank_to_flat",
+  "flat",
+  "flat",
+  "right_turn_5",
+  "flat_to_right_bank",
+  "right_bank",
+  "right_bank_to_flat",
+  "flat",
+  "right_turn_5",
+  "flat_to_down_25",
+  "down_25",
+  "down_25",
+  "down_25_to_flat"
+ ],
+ "program": {
+  "ok": true,
+  "pieces_placed": 54,
+  "pieces_total": 54
+ },
+ "rides": [
+  {
+   "average_speed": 221735,
+   "circuit": {
+    "looped": true,
+    "orphan_pieces": 0,
+    "total_pieces": 54,
+    "walked_pieces": 54
+   },
+   "crashed": false,
+   "excitement": 2.680000066757202,
+   "highest_drop": 8,
+   "id": 100,
+   "intensity": 1.409999966621399,
+   "max_lateral_g": 1.1699999570846558,
+   "max_negative_g": 0.20000000298023224,
+   "max_positive_g": 2.009999990463257,
+   "max_speed": 769782,
+   "nausea": 0.75,
+   "num_drops": 3,
+   "num_inversions": 0,
+   "ride_length": 294,
+   "ride_time": 66,
+   "ride_type": 51,
+   "status": "testing",
+   "tested": true,
+   "total_air_time": 0
+  }
+ ],
+ "score": 2.680000066757202,
+ "similarity": null,
+ "start": {
+  "bank": 0,
+  "dir": 2,
+  "slope": 0,
+  "x": 60,
+  "y": 60,
+  "z": 112
+ }
+}

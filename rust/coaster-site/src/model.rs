@@ -415,7 +415,13 @@ impl EvalRun {
     /// runs from before it recorded that fall back to "every model ran the
     /// same number of rounds".
     pub fn incomplete_reason(&self) -> Option<String> {
-        let have = |name: &str| self.models.iter().find(|m| m.model == name);
+        // run.json records raw model ids ("poolside/Laguna-S-2.1"); model
+        // dirs on disk are sanitised, so compare in sanitised space.
+        let have = |name: &str| {
+            self.models
+                .iter()
+                .find(|m| m.model == name || m.model == sanitise_name(name))
+        };
         let missing: Vec<&str> = self
             .expected_models
             .iter()
